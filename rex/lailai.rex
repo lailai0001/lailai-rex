@@ -1,5 +1,4 @@
 {
-  "name": "lailai-rex",
   "title": "lailai-rex",
   "description": "lai 的 REX 组件合集",
   "widgets": [
@@ -103,5 +102,6 @@
       "icon": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/-v2-2.js"
     }
-  ]
+  ],
+  "icon": ""
 }
