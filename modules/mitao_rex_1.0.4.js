@@ -14,6 +14,7 @@ WidgetMetadata = {
   requiredVersion: "0.0.1",
   description: "蜜桃视频/短剧/动漫/国产/黑料 · PoW+HMAC | 由 mira-cat 蜜桃源转换",
   author: "lai",
+  site: "https://honeypeach.cc",
   detailCacheDuration: 180,
   modules: [
     { id: "video_new", title: "最近更新", functionName: "loadVideoNew", cacheDuration: 600,
