@@ -1,4 +1,4 @@
-// March视频 for REX (lai_march v1.0.0)
+// March视频 for REX (lai_march v1.1.3)
 // 移植自 mira-cat 蜘蛛 march.js (py_march)，只读蓝图移植，未改动猫源。
 // 后端：March App 的 JSON API (https://api.march24168.online)，封面/媒体走 cdn.uameta.ai。
 // 与蜘蛛一致：内置用户授权账号登录拿 token（可被 extend 覆盖的口径在 REX 无配置通道，
@@ -15,13 +15,23 @@
 // 2026-10-21 二轮：形态对齐后有声真机仍播不了，而 mp3 直链 HTTP 层全正常——REX 播放器内核
 //   不播裸的渐进式音频直链。有声路径改走 audio-hls Worker 包成单段 HLS 再播（视频路径不动）；
 //   Worker 未部署时探活失败自动回退直链（与一轮行为一致）。漫画/小说仍只出详情信息。
+// 2026-10-21 三轮：audio-hls 已部署上线但有声真机仍播不了。两处改：
+//   (1) Worker v2 清单改 512KB BYTERANGE 多段（巨型单分片是不开播头号嫌疑）；
+//   (2) 模块去掉探活短路——探活可能在真机误判把有声打回已知播不了的直链；
+//       Worker 已确认上线，有声路径无条件走包装（视频路径仍原直链，一字未动）。
+// 2026-10-21 四轮：用户澄清有声症状是"解析不到播放地址、根本就没办法点播放"（详情侧
+//   无可点目标）。冷进程 harness 复现：字符串 link 全链通（登录 token 每进程重新拿、不
+//   依赖列表阶段内存，_itemCache 只影响视频封面/标题且 videoUrl 在 link 里自带）；但运行
+//   时若把卡片/子项对象传给 loadDetail，旧版 parseRef("[object Object]") 必回"参数
+//   错误"、无集可点——已验收的 mitao 明确防对象入参。本轮 loadDetail 先把对象入参摊平
+//   成 link 字符串再解析（视频/漫画/小说走同一入口、逻辑未动，仅多一层摊平）。
 
 WidgetMetadata = {
   id: "lai_march",
   title: "March视频",
   description: "March视频：视频（FC2/MOODYZ/S1/加勒比/一本道/麻豆传媒）、有声、漫画、小说，App API 直取",
   author: "lai",
-  version: "1.0.0",
+  version: "1.1.3",
   requiredVersion: "0.0.1",
   site: "https://api.march24168.online",
   detailCacheDuration: 180,
@@ -148,17 +158,9 @@ var API = "https://api.march24168.online";
 var CDN = "https://cdn.uameta.ai/file/bucket-media";
 var UA = "Dart/3.11 (dart:io)";
 var AUDIO_HLS = "https://audio-hls.li768435813.workers.dev";
-var _ahlsOk = null;
-// 有声 mp3 直链 -> audio-hls 的单段 HLS 地址；Worker 未部署（探活失败）时回退直链，不比现状差
+// 有声 mp3 直链 -> audio-hls 的 HLS 地址（Worker 已部署确认，无条件包装，不再探活回退直链）
 async function audioWrap(url) {
   if (!url) return url;
-  if (_ahlsOk === null) {
-    try {
-      var r = await Widget.http.get(AUDIO_HLS + "/", { headers: { "User-Agent": UA } });
-      _ahlsOk = !!(r && String(r.data == null ? "" : r.data).indexOf("audio-hls ok") === 0);
-    } catch (e) { _ahlsOk = false; }
-  }
-  if (!_ahlsOk) return url;
   return AUDIO_HLS + "/a?u=" + encodeURIComponent(url);
 }
 
@@ -389,7 +391,14 @@ async function chapterUrlOf(chid) {
   return m ? (m.chapterUrl || m.url || "") : "";
 }
 
+// 运行时可能把卡片/子项对象整个传进来（已验收的 mitao 同款防御）：先摊平成字符串
+function unwrapLink(link) {
+  if (link && typeof link === "object") return String(link.link || link.id || link.url || "");
+  return String(link || "");
+}
+
 async function loadDetail(link) {
+  link = unwrapLink(link);
   var ref = parseRef(link);
   try {
     if (ref.kind === "video") {

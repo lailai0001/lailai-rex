@@ -1,4 +1,4 @@
-// ASMR for REX (lai_asmr v1.0.0)
+// ASMR for REX (lai_asmr v1.1.2)
 // 移植自 mira-cat 蜘蛛 asmr.js（只读蓝图，逻辑等价移植）。
 // 后端：api.asmr.one 公开 JSON API（asmr.one / ASMR Online 的数据接口）。
 // 作品为多音轨音频：loadDetail 返回分轨（episodeItems/childItems），
@@ -11,13 +11,23 @@
 // 2026-10-21 二轮：形态对齐后真机仍播不了，而直链 HTTP 层（200/206/audio-mpeg/Range）全正常——
 //   REX 播放器内核不播裸的渐进式音频直链（能播的全是 HLS 或视频文件）。改走 audio-hls Worker
 //   把音频直链包成单段 HLS（/a?u=&d=）再播；Worker 未部署时探活失败自动回退直链（与一轮行为一致）。
+// 2026-10-21 三轮：audio-hls 已部署上线，但真机仍播不了。两处改：
+//   (1) Worker v2 把清单从"整文件单分片"改为 512KB BYTERANGE 多段（巨型单分片是不开播头号嫌疑）；
+//   (2) 模块去掉探活短路——探活在真机上可能误判（Widget.http 形态与播放器不同）把模块打回
+//       已知播不了的直链；Worker 已确认上线，音频路径无条件走包装。
+// 2026-10-21 四轮：用户澄清症状是"解析不到播放地址、根本就没办法点播放"（详情侧无可点目标）。
+//   冷进程 harness 复现：字符串 link 全链通（id/link 自包含、不依赖列表阶段内存）；但运行时
+//   若把卡片/子项对象传给 loadDetail，旧版 String(对象)="[object Object]" 必回"参数错误"、
+//   零集可点——已验收的 mitao 明确防对象入参，本轮对齐：loadDetail 兼容对象入参（取
+//   link/id/url）；另 loadResource 把作品引用解析提到裸 https 兜底之前并排除图片地址——
+//   旧顺序下入参含卡片对象时，会先命中封面图 https、把封面 JPG 当音频包进 audio-hls 返回。
 
 WidgetMetadata = {
 id: "lai_asmr",
 title: "ASMR",
 description: "ASMR（asmr.one）：最新/新发/最热/高分/热议排序浏览与搜索，多音轨音频直链播放",
 author: "lai",
-version: "1.0.0",
+version: "1.1.2",
 requiredVersion: "0.0.1",
 site: "https://www.asmr.one",
 detailCacheDuration: 180,
@@ -57,17 +67,9 @@ params: [
 
 var API = "https://api.asmr.one";
 var AUDIO_HLS = "https://audio-hls.li768435813.workers.dev";
-var _ahlsOk = null;
-// 音频直链 -> audio-hls 的单段 HLS 地址；Worker 未部署（探活失败）时回退直链，不比现状差
+// 音频直链 -> audio-hls 的 HLS 地址（Worker 已部署确认，无条件包装，不再探活回退直链）
 async function audioWrap(url, dur) {
 if (!url) return url;
-if (_ahlsOk === null) {
-try {
-var r = await Widget.http.get(AUDIO_HLS + "/", { headers: { "User-Agent": UA}});
-_ahlsOk = !!(r && String(r.data == null? "": r.data).indexOf("audio-hls ok") === 0);
-} catch (e) { _ahlsOk = false;}
-}
-if (!_ahlsOk) return url;
 var w = AUDIO_HLS + "/a?u=" + encodeURIComponent(url);
 if (dur && dur > 0) w += "&d=" + Math.round(dur);
 return w;
@@ -209,8 +211,14 @@ try { t = decodeURIComponent(m[3] || "");} catch (e) {}
 return { wid: m[1], url: u, name: t, dur: parseFloat(m[4]) || 0};
 }
 
+// 运行时可能把卡片/子项对象整个传进来（已验收的 mitao 同款防御）：先摊平成字符串
+function unwrapLink(link) {
+if (link && typeof link === "object") return String(link.link || link.id || link.url || "");
+return String(link || "");
+}
+
 async function loadDetail(link) {
-var url = String(link || "");
+var url = unwrapLink(link);
 // 运行时若拿单轨引用来走 loadDetail，直接回可播 detail（与 loadResource 双保险）
 var tref = parseTrackRef(url);
 if (tref && tref.url) {
@@ -313,18 +321,13 @@ if (tr && tr.url) {
 return [{ name: tr.name || "播放", url: await audioWrap(tr.url, tr.dur), playerType: "app", customHeaders: { "User-Agent": UA}}];
 }
 }
-// 2) 直链（旧形态兼容）
-for (var j = 0; j < uniq.length; j++) {
-if (/^https?:\/\//i.test(uniq[j])) {
-return [{ name: "播放", url: await audioWrap(uniq[j], 0), playerType: "app", customHeaders: { "User-Agent": UA}}];
-}
-}
-// 3) 作品引用 / 裸 id -> 全部音轨
+// 2) 作品引用 / 裸 id -> 全部音轨（排在裸 https 兜底之前：入参若含卡片对象，
+//    封面图 https 同在候选里，旧顺序会先把封面当音频包走、永远到不了这一步）
 var vid = "";
 for (var k = 0; k < uniq.length; k++) {
 if (uniq[k].indexOf("asmr://") === 0 || /^\d+$/.test(uniq[k])) { vid = parseWorkId(uniq[k]); if (vid) break;}
 }
-if (!vid) return [];
+if (vid) {
 var tracks = await fetchTracks(vid);
 var outRes = [];
 for (var q = 0; q < tracks.length; q++) {
@@ -335,7 +338,15 @@ playerType: "app",
 customHeaders: { "User-Agent": UA}
 });
 }
-return outRes;
+if (outRes.length) return outRes;
+}
+// 3) 直链（旧形态兼容；跳过图片地址，避免误把封面/海报当音频）
+for (var j = 0; j < uniq.length; j++) {
+if (/^https?:\/\//i.test(uniq[j]) && !/\.(jpe?g|png|webp|gif|bmp|svg)(\?|#|$)/i.test(uniq[j])) {
+return [{ name: "播放", url: await audioWrap(uniq[j], 0), playerType: "app", customHeaders: { "User-Agent": UA}}];
+}
+}
+return [];
 } catch (e) {
 return [];
 }
