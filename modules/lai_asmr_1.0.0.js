@@ -1,4 +1,4 @@
-// ASMR for REX (lai_asmr v1.1.2)
+// ASMR for REX (lai_asmr v1.1.3)
 // 移植自 mira-cat 蜘蛛 asmr.js（只读蓝图，逻辑等价移植）。
 // 后端：api.asmr.one 公开 JSON API（asmr.one / ASMR Online 的数据接口）。
 // 作品为多音轨音频：loadDetail 返回分轨（episodeItems/childItems），
@@ -21,13 +21,18 @@
 //   零集可点——已验收的 mitao 明确防对象入参，本轮对齐：loadDetail 兼容对象入参（取
 //   link/id/url）；另 loadResource 把作品引用解析提到裸 https 兜底之前并排除图片地址——
 //   旧顺序下入参含卡片对象时，会先命中封面图 https、把封面 JPG 当音频包进 audio-hls 返回。
+// 2026-10-21 五轮：用户截图作品（RJ01718010，29 轨/7.96h）判别——冷进程实测 detail 只发
+//   2 个请求（work+tracks，轨 URL 内嵌、无逐轨预取），全出参包装无裸链；慢点在两跳串行
+//   （VM 合计 1.0~3.1s，work 接口单跳 0.58~2.16s）且 apiGet 无 timeout、连接挂死会无限转。
+//   本轮：loadDetail 两跳改并发（Promise.all）；apiGet 加 timeout 25000（对齐 March），
+//   挂死连接改为失败回错误卡而非无限等。判别全文见 ports/FIX_audio5.md。
 
 WidgetMetadata = {
 id: "lai_asmr",
 title: "ASMR",
 description: "ASMR（asmr.one）：最新/新发/最热/高分/热议排序浏览与搜索，多音轨音频直链播放",
 author: "lai",
-version: "1.1.2",
+version: "1.1.3",
 requiredVersion: "0.0.1",
 site: "https://www.asmr.one",
 detailCacheDuration: 180,
@@ -87,7 +92,8 @@ return t(s).replace(/【/g, "[").replace(/】/g, "]").replace(/\$/g, "").replace
 async function apiGet(path) {
 try {
 var res = await Widget.http.get(API + path, {
-headers: { "User-Agent": UA, "Accept": "application/json", "Referer": "https://www.asmr.one/"}
+headers: { "User-Agent": UA, "Accept": "application/json", "Referer": "https://www.asmr.one/"},
+timeout: 25000
 });
 var data = res && res.data!= null? res.data: null;
 if (data == null) return {};
@@ -238,13 +244,18 @@ if (!vid) {
 return { id: url, type: "url", title: "参数错误", description: "无法识别作品 id"};
 }
 try {
-var d = await apiGet("/api/work/" + encodeURIComponent(vid));
+// work 与 tracks 互不依赖（vid 已在 link 里）：并发取，详情耗时从两跳之和降到取大者
+var both = await Promise.all([
+apiGet("/api/work/" + encodeURIComponent(vid)),
+fetchTracks(vid)
+]);
+var d = both[0];
 if (!d ||!d.id) {
 return { id: url, type: "url", title: "加载失败", description: "作品不存在或接口无响应"};
 }
 var cover = d.mainCoverUrl || d.samCoverUrl || "";
 var title = cleanTitle(d.title) || vid;
-var tracks = await fetchTracks(vid);
+var tracks = both[1];
 var result = {
 id: url,
 type: "url",
