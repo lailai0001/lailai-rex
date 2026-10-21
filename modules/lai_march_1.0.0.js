@@ -12,7 +12,9 @@
 //   只给 episodeItems/childItems（child 的 id==link==单集引用），不再给 episodes 键；
 //   单集作品在 detail 里直接解出 videoUrl（走已证实的 detail 直达形态）；
 //   loadResource 改为递归搜集 params 全部字符串逐个试解；loadDetail 收到单集引用也能直解。
-//   - 漫画/小说蜘蛛本身不提供可播内容（vod_play_url 为空），本模块同口径：只出详情信息。
+// 2026-10-21 二轮：形态对齐后有声真机仍播不了，而 mp3 直链 HTTP 层全正常——REX 播放器内核
+//   不播裸的渐进式音频直链。有声路径改走 audio-hls Worker 包成单段 HLS 再播（视频路径不动）；
+//   Worker 未部署时探活失败自动回退直链（与一轮行为一致）。漫画/小说仍只出详情信息。
 
 WidgetMetadata = {
   id: "lai_march",
@@ -145,6 +147,20 @@ WidgetMetadata = {
 var API = "https://api.march24168.online";
 var CDN = "https://cdn.uameta.ai/file/bucket-media";
 var UA = "Dart/3.11 (dart:io)";
+var AUDIO_HLS = "https://audio-hls.li768435813.workers.dev";
+var _ahlsOk = null;
+// 有声 mp3 直链 -> audio-hls 的单段 HLS 地址；Worker 未部署（探活失败）时回退直链，不比现状差
+async function audioWrap(url) {
+  if (!url) return url;
+  if (_ahlsOk === null) {
+    try {
+      var r = await Widget.http.get(AUDIO_HLS + "/", { headers: { "User-Agent": UA } });
+      _ahlsOk = !!(r && String(r.data == null ? "" : r.data).indexOf("audio-hls ok") === 0);
+    } catch (e) { _ahlsOk = false; }
+  }
+  if (!_ahlsOk) return url;
+  return AUDIO_HLS + "/a?u=" + encodeURIComponent(url);
+}
 
 // 内置账号与蜘蛛一致（用户授权内置；base64 仅作混淆存储，纯 JS 解码，沙箱无 Buffer）
 var _LN_B64 = "Mjg1ODg2NzUxQHFxLmNvbQ==";
@@ -411,7 +427,7 @@ async function loadDetail(link) {
         type: "detail",
         title: "March有声",
         link: String(link),
-        videoUrl: durl,
+        videoUrl: await audioWrap(durl),
         playerType: "app",
         customHeaders: { "User-Agent": UA }
       };
@@ -457,7 +473,7 @@ async function loadDetail(link) {
             posterPath: acover,
             coverUrl: acover,
             backdropPath: acover,
-            videoUrl: oneUrl,
+            videoUrl: await audioWrap(oneUrl),
             playerType: "app",
             description: adesc,
             customHeaders: { "User-Agent": UA }
@@ -560,10 +576,10 @@ async function loadResource(params) {
 
     if (epRef) {
       var direct = queryParam(epRef.ref.query, "u");
-      if (direct) return [{ name: "播放", url: direct, playerType: "app", customHeaders: { "User-Agent": UA } }];
+      if (direct) return [{ name: "播放", url: await audioWrap(direct), playerType: "app", customHeaders: { "User-Agent": UA } }];
       var url = await chapterUrlOf(epRef.ref.id);
       if (!url) return [];
-      return [{ name: "播放", url: url, playerType: "app", customHeaders: { "User-Agent": UA } }];
+      return [{ name: "播放", url: await audioWrap(url), playerType: "app", customHeaders: { "User-Agent": UA } }];
     }
 
     var workStr = workRef ? workRef.str : (bareId ? "march://audio/" + bareId : "");
@@ -597,7 +613,7 @@ async function loadResource(params) {
       // 兜底：传进来的裸数字也许是章节 id 而非作品 id
       if (bareId && !workRef) {
         var curl = await chapterUrlOf(bareId);
-        if (curl) return [{ name: "播放", url: curl, playerType: "app", customHeaders: { "User-Agent": UA } }];
+        if (curl) return [{ name: "播放", url: await audioWrap(curl), playerType: "app", customHeaders: { "User-Agent": UA } }];
       }
       return out;
     }

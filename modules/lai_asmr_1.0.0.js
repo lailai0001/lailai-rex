@@ -8,6 +8,9 @@
 //   child 的 id==link==不透明单轨引用（asmr://track/<作品id>?u=<直链>），不再直填流地址、
 //   不再附带 episodes 键（旧版拿直链当 link 时，运行时若走 loadDetail 会把日期里的数字误当作品 id）；
 //   loadDetail 收到单轨引用直接回可播 detail；loadResource 递归搜集 params 全部字符串逐个试解。
+// 2026-10-21 二轮：形态对齐后真机仍播不了，而直链 HTTP 层（200/206/audio-mpeg/Range）全正常——
+//   REX 播放器内核不播裸的渐进式音频直链（能播的全是 HLS 或视频文件）。改走 audio-hls Worker
+//   把音频直链包成单段 HLS（/a?u=&d=）再播；Worker 未部署时探活失败自动回退直链（与一轮行为一致）。
 
 WidgetMetadata = {
 id: "lai_asmr",
@@ -53,6 +56,22 @@ params: [
 };
 
 var API = "https://api.asmr.one";
+var AUDIO_HLS = "https://audio-hls.li768435813.workers.dev";
+var _ahlsOk = null;
+// 音频直链 -> audio-hls 的单段 HLS 地址；Worker 未部署（探活失败）时回退直链，不比现状差
+async function audioWrap(url, dur) {
+if (!url) return url;
+if (_ahlsOk === null) {
+try {
+var r = await Widget.http.get(AUDIO_HLS + "/", { headers: { "User-Agent": UA}});
+_ahlsOk = !!(r && String(r.data == null? "": r.data).indexOf("audio-hls ok") === 0);
+} catch (e) { _ahlsOk = false;}
+}
+if (!_ahlsOk) return url;
+var w = AUDIO_HLS + "/a?u=" + encodeURIComponent(url);
+if (dur && dur > 0) w += "&d=" + Math.round(dur);
+return w;
+}
 var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 var PAGE_SIZE = 20;
 var ORDERS = ["create_date", "release", "dl_count", "rate_average_2dp", "review_count"];
@@ -161,7 +180,7 @@ for (var i = 0; i < audio.length; i++) {
 var a = audio[i];
 var url = a.streamLowQualityUrl || a.mediaStreamUrl || "";
 if (!url) continue;
-tracks.push({ name: cleanTitle(a.title) || ("音轨" + (tracks.length + 1)), url: url});
+tracks.push({ name: cleanTitle(a.title) || ("音轨" + (tracks.length + 1)), url: url, dur: parseFloat(a.duration) || 0});
 }
 return tracks;
 }
@@ -174,18 +193,20 @@ m = s.match(/(\d{3,})/);
 return m? m[1]: "";
 }
 
-// 单轨引用：asmr://track/<作品id>?u=<直链>&t=<轨名>（id==link 都用它，对齐 mitao 形态）
-function trackRef(wid, name, url) {
-return "asmr://track/" + wid + "?u=" + encodeURIComponent(url || "") + "&t=" + encodeURIComponent(name || "");
+// 单轨引用：asmr://track/<作品id>?u=<直链>&t=<轨名>&d=<时长秒>（id==link 都用它，对齐 mitao 形态）
+function trackRef(wid, name, url, dur) {
+var r = "asmr://track/" + wid + "?u=" + encodeURIComponent(url || "") + "&t=" + encodeURIComponent(name || "");
+if (dur && dur > 0) r += "&d=" + Math.round(dur);
+return r;
 }
 
 function parseTrackRef(s) {
-var m = String(s || "").match(/^asmr:\/\/track\/(\d+)\?u=([^&]*)(?:&t=([^&]*))?/);
+var m = String(s || "").match(/^asmr:\/\/track\/(\d+)\?u=([^&]*)(?:&t=([^&]*))?(?:&d=([\d.]+))?/);
 if (!m) return null;
 var u = "", t = "";
 try { u = decodeURIComponent(m[2] || "");} catch (e) {}
 try { t = decodeURIComponent(m[3] || "");} catch (e) {}
-return { wid: m[1], url: u, name: t};
+return { wid: m[1], url: u, name: t, dur: parseFloat(m[4]) || 0};
 }
 
 async function loadDetail(link) {
@@ -199,7 +220,7 @@ type: "detail",
 title: tref.name || "ASMR",
 name: tref.name || "ASMR",
 link: url,
-videoUrl: tref.url,
+videoUrl: await audioWrap(tref.url, tref.dur),
 playerType: "app",
 customHeaders: { "User-Agent": UA}
 };
@@ -231,12 +252,12 @@ playerType: "app"
 };
 if (tracks.length === 1) {
 result.type = "detail";
-result.videoUrl = tracks[0].url;
+result.videoUrl = await audioWrap(tracks[0].url, tracks[0].dur);
 result.customHeaders = { "User-Agent": UA};
 } else if (tracks.length > 1) {
 var childItems = tracks.map(function (tr, i) {
 var epName = ("0" + (i + 1)).slice(-2) + " " + tr.name;
-var r = trackRef(vid, tr.name, tr.url);
+var r = trackRef(vid, tr.name, tr.url, tr.dur);
 return {
 id: r,
 title: epName,
@@ -289,13 +310,13 @@ if (!uniq.length) return [];
 for (var i = 0; i < uniq.length; i++) {
 var tr = parseTrackRef(uniq[i]);
 if (tr && tr.url) {
-return [{ name: tr.name || "播放", url: tr.url, playerType: "app", customHeaders: { "User-Agent": UA}}];
+return [{ name: tr.name || "播放", url: await audioWrap(tr.url, tr.dur), playerType: "app", customHeaders: { "User-Agent": UA}}];
 }
 }
 // 2) 直链（旧形态兼容）
 for (var j = 0; j < uniq.length; j++) {
 if (/^https?:\/\//i.test(uniq[j])) {
-return [{ name: "播放", url: uniq[j], playerType: "app", customHeaders: { "User-Agent": UA}}];
+return [{ name: "播放", url: await audioWrap(uniq[j], 0), playerType: "app", customHeaders: { "User-Agent": UA}}];
 }
 }
 // 3) 作品引用 / 裸 id -> 全部音轨
@@ -305,14 +326,16 @@ if (uniq[k].indexOf("asmr://") === 0 || /^\d+$/.test(uniq[k])) { vid = parseWork
 }
 if (!vid) return [];
 var tracks = await fetchTracks(vid);
-return tracks.map(function (tr2, i2) {
-return {
-name: ("0" + (i2 + 1)).slice(-2) + " " + tr2.name,
-url: tr2.url,
+var outRes = [];
+for (var q = 0; q < tracks.length; q++) {
+outRes.push({
+name: ("0" + (q + 1)).slice(-2) + " " + tracks[q].name,
+url: await audioWrap(tracks[q].url, tracks[q].dur),
 playerType: "app",
 customHeaders: { "User-Agent": UA}
-};
 });
+}
+return outRes;
 } catch (e) {
 return [];
 }

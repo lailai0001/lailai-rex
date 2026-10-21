@@ -1,4 +1,4 @@
-// 91成人短剧 for REX (lai_91duanju v1.1.0)
+// 91成人短剧 for REX (lai_91duanju v1.2.0)
 // 移植自 mira-cat 蜘蛛 91duanju.js（只读蓝图，逻辑等价移植）。
 // 后端：91crdj.com（HTML 页面解析；现行镜像 91crdjai.com）。
 // v1.1.0（真机反馈修复）：
@@ -13,6 +13,20 @@
 //      清单域封 CF 出口、公共中转也拉不动，所以清单必须手机侧取），清单经 Worker /up
 //      暂存后播放器从 workers.dev 取（TLS 干净）。Worker 未部署、运行时无 POST 或
 //      取清单失败时，自动只回直连线（与 v1.0.0 行为一致，无回归）。
+// v1.2.0（二轮真机反馈：每分类只出 1 条/加载不出更多、仍无法播放）：
+//   ① 列表改双路解析并取并集：原 class=card 正则 + 通用「两段式详情链接」锚点解析，
+//      对设备侧拿到的页面变体（class 改名/结构微差）免疫；解析为 0 时自动换另一个
+//      主机重取一次，翻页为空再试 ?page=N 形式；仍为 0 时返回一张「诊断卡」，把设备
+//      实际拿到的正文长度/关键标志/页面标题写进说明，供下一轮凭据定位（VM 侧用尽
+//      请求画像——6 种 UA、带/不带 cookie 链、Accept 变体——均拿满 22 卡，入口与
+//      镜像均不种 cookie，故障只存在于设备运行时拿到的响应本身，须靠遥测量化）。
+//   ② 播放：实测 yd-hls 清单走 http 明文与 https 正文逐字一致（新杠杆）——手机侧
+//      取清单先 https、失败再 http（用户报的是 TLS 失败，明文无 TLS 可拦）；新增
+//      「明文」直连线（清单 http + 分片 https，若干扰只针对 yd-hls 的 SNI 可直通）；
+//      代理线在 /up 暂存后立即回读校验、失败重存一次，仍失败把原因短码标在直连
+//      线名上（如「直连(代理失败:pl_fail)」），用户选线时可见、可回报。
+//      yd-hls 对 CF 出口 https/http 均为 403（IP 层拒），服务端直取清单无路，
+//      故清单仍须手机侧取——本轮把这一步的成功率与可观测性拉满。
 // 封面为 AES-128-CBC 加密存储，走用户已部署的 bagua-img-proxy Worker 解密出图。
 // 短剧为多集结构：loadDetail 返回分集（episodeItems/childItems），
 // 播放由 stream 模块 loadResource 实时抓集页面解析 m3u8（蜘蛛 play 逻辑）。
@@ -22,7 +36,7 @@ WidgetMetadata = {
   title: "91成人短剧",
   description: "91成人短剧（91crdj.com）：成人短剧/漫剧/真人剧/视频/漫画/小说，多集短剧实时解析播放",
   author: "lai",
-  version: "1.1.0",
+  version: "1.2.0",
   requiredVersion: "0.0.1",
   site: "https://91crdj.com",
   detailCacheDuration: 180,
@@ -98,6 +112,25 @@ function absOnBase(pathOrUrl) {
   return BASE + (s.charAt(0) === "/" ? s : "/" + s);
 }
 
+// 最近一次页面抓取的遥测（供列表诊断卡使用）：运行时拿到的响应在 VM 侧无法观测，
+// 只能把长度/状态记下来，解析为 0 时写进诊断卡让用户回报。
+var lastFetch = { host: "", status: -1, len: 0 };
+
+// 单主机抓取：成功返回正文并把 BASE 切到该主机；失败抛错。
+async function fetchTextFrom(host, path, referer) {
+  var res = await Widget.http.get(host + path, { headers: pageHeaders(referer ? absOnBase(referer) : host + "/") });
+  var body = res && res.data != null ? String(res.data) : "";
+  var st = -1;
+  if (res) {
+    if (typeof res.status === "number") st = res.status;
+    else if (typeof res.statusCode === "number") st = res.statusCode;
+  }
+  lastFetch = { host: host, status: st, len: body.length };
+  if (!body) throw new Error("空回应");
+  BASE = host;
+  return body;
+}
+
 // 带主机兜底的页面抓取：先试 BASE，失败依次试其它主机；谁成功就把 BASE 切到谁。
 // 入口域名返回的是 301 跳镜像，Widget.http 跟随跳转后 res 里是镜像正文，同样算成功。
 async function fetchText(url, referer) {
@@ -112,13 +145,8 @@ async function fetchText(url, referer) {
   var order = [BASE].concat(HOSTS.filter(function (h) { return h !== BASE; }));
   var lastErr = null;
   for (var i = 0; i < order.length; i++) {
-    var host = order[i];
     try {
-      var res = await Widget.http.get(host + path, { headers: pageHeaders(referer ? absOnBase(referer) : host + "/") });
-      var body = res && res.data != null ? String(res.data) : "";
-      if (!body) throw new Error("空回应");
-      BASE = host;
-      return body;
+      return await fetchTextFrom(order[i], path, referer);
     } catch (e) { lastErr = e; }
   }
   throw lastErr || new Error("请求失败");
@@ -198,18 +226,147 @@ function parseCards(html) {
   return items;
 }
 
+// 备用解析（策略 B）：不依赖 class=card，抓所有「两段式详情链接」锚点。
+// 设备运行时拿到的页面若与 VM 所见有结构微差（class 改名、卡片换容器），A 会全灭、B 仍能出卡。
+function vidOfLink(link) {
+  var p = String(link || "");
+  try { p = new URL(p, BASE).pathname; } catch (e) {}
+  var seg = p.split("/").filter(Boolean);
+  return seg.length >= 2 ? seg[1] : p;
+}
+
+function parseCardsAlt(html) {
+  var items = [];
+  if (!html) return items;
+  var seen = {};
+  var aRe = /<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  var m;
+  while ((m = aRe.exec(html))) {
+    var href = t(m[1]);
+    var whole = m[0];
+    var block = m[2];
+    var p = href;
+    try { p = new URL(href, BASE).pathname; } catch (e) {}
+    var seg = p.split("/").filter(Boolean);
+    if (seg.length !== 2) continue;
+    var vid = seg[1];
+    // 详情 id 特征：含数字或连字符（如 4800-beizhuazoudeshiyanep1）；导航/功能链接多为纯词，跳过
+    if (!/\d/.test(vid) && vid.indexOf("-") < 0) continue;
+    if (seen[vid]) continue;
+
+    var title = "";
+    var attrs = ["data-track-item-name", "alt", "title"];
+    for (var ai = 0; ai < attrs.length; ai++) {
+      var tm = (whole + block).match(new RegExp(attrs[ai] + '\\s*=\\s*["\']([^"\']*)["\']', "i"));
+      if (tm && t(tm[1])) { title = t(tm[1]); break; }
+    }
+    if (!title) {
+      var bt = block.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      if (bt) title = bt.slice(0, 60);
+    }
+    if (!title) title = vid;
+
+    var cover = "";
+    var lattrs = ["data-original", "data-src", "data-echo", "data-url"];
+    for (var li = 0; li < lattrs.length; li++) {
+      var im = block.match(new RegExp(lattrs[li] + '\\s*=\\s*["\']([^"\']+)["\']', "i"));
+      if (im) { cover = t(im[1]); break; }
+    }
+    if (!cover) {
+      var im2 = block.match(/<img[^>]*?(?<![\w-])src\s*=\s*["']([^"']+)["']/i);
+      if (im2) cover = t(im2[1]);
+    }
+    var low = cover.toLowerCase();
+    if (["data:", "load.gif", "loading.gif", "placeholder"].some(function (b) { return low.indexOf(b) >= 0; })) cover = "";
+    if (cover.indexOf("//") === 0) cover = "https:" + cover;
+    else if (cover.charAt(0) === "/") cover = BASE + cover;
+
+    seen[vid] = 1;
+    var link = BASE + p;
+    var pic = proxyCover(cover);
+    items.push({
+      id: link,
+      type: "url",
+      title: title,
+      posterPath: pic,
+      coverUrl: pic,
+      backdropPath: pic,
+      link: link,
+      description: "",
+      mediaType: "movie"
+    });
+  }
+  return items;
+}
+
+// A 优先、B 补缺（按详情 id 去重）
+function mergeCards(html) {
+  var a = parseCards(html);
+  if (!html) return a;
+  var seen = {};
+  a.forEach(function (c) { seen[vidOfLink(c.link)] = 1; });
+  var out = a.slice();
+  parseCardsAlt(html).forEach(function (c) {
+    var v = vidOfLink(c.link);
+    if (!seen[v]) { seen[v] = 1; out.push(c); }
+  });
+  return out;
+}
+
+// 解析为 0 时的诊断卡：把设备实际拿到的正文特征写进说明，用户原样回报即可定位
+function diagCard(html, cat, page) {
+  var body = String(html || "");
+  var tm = body.match(/<title>([\s\S]*?)<\/title>/i);
+  var flags = [];
+  flags.push("len=" + body.length);
+  flags.push("status=" + lastFetch.status);
+  flags.push("host=" + (lastFetch.host || BASE).replace("https://", ""));
+  flags.push("cat=" + cat + " page=" + page);
+  flags.push("hasCardCls=" + (/class\s*=\s*["'][^"']*card/i.test(body) ? 1 : 0));
+  flags.push("anchors=" + ((body.match(/<a\b/gi) || []).length));
+  flags.push("detailLinks=" + ((body.match(/href\s*=\s*["']\/[a-z0-9_-]+\/[\w-]+\//gi) || []).length));
+  flags.push("justAMoment=" + (body.indexOf("Just a moment") >= 0 ? 1 : 0));
+  flags.push("title=" + (tm ? t(tm[1].replace(/<[^>]+>/g, "")).slice(0, 40) : "-"));
+  return {
+    id: "diag91",
+    type: "url",
+    title: "⚠诊断：本页没解析出内容（请把说明截图回报）",
+    description: flags.join(" | "),
+    mediaType: "movie"
+  };
+}
+
 async function loadList(params) {
   params = params || {};
   var cat = String(params.cat || params.path || "duanju").replace(/^\/+/, "").replace(/\/+$/, "");
-  var page = parseInt(params.page, 10) || 1;
+  var page = parseInt(params.page != null ? params.page : (params.pageNo != null ? params.pageNo : params.p), 10) || 1;
   var path = page > 1 ? "/" + cat + "/page/" + page + "/" : "/" + cat + "/";
+  var html = "";
   try {
-    var html = await fetchText(path, BASE + "/");
-    var list = parseCards(html);
-    return list.length ? list : [{ id: "empty", type: "url", title: "没有找到相关内容" }];
+    html = await fetchText(path, BASE + "/");
+    var list = mergeCards(html);
+    if (list.length) return list;
+    // 0 卡：换另一个主机重取一次（当前主机给设备回了变体页时兜底）
+    var others = HOSTS.filter(function (h) { return h !== BASE; });
+    for (var oi = 0; oi < others.length; oi++) {
+      try {
+        html = await fetchTextFrom(others[oi], path, BASE + "/");
+        list = mergeCards(html);
+        if (list.length) return list;
+      } catch (e) {}
+    }
+    // 翻页再试查询参数形式
+    if (page > 1) {
+      try {
+        html = await fetchText("/" + cat + "/?page=" + page, BASE + "/");
+        list = mergeCards(html);
+        if (list.length) return list;
+      } catch (e) {}
+    }
+    return [diagCard(html, cat, page)];
   } catch (e) {
     var msg = String((e && e.message) || e);
-    return [{ id: "err", type: "url", title: "载入失败: " + msg.slice(0, 50), description: msg + " | URL: " + BASE + path }];
+    return [{ id: "err", type: "url", title: "载入失败: " + msg.slice(0, 50), description: msg + " | URL: " + BASE + path + " | lastFetch: " + lastFetch.host + "/" + lastFetch.status + "/" + lastFetch.len }];
   }
 }
 
@@ -232,7 +389,7 @@ async function search(params) {
   if (page > 1) path += "&page=" + page;
   try {
     var html = await fetchText(path, BASE + "/");
-    var list = parseCards(html);
+    var list = mergeCards(html);
     return list.length ? list : [{ id: "empty", type: "url", title: "没有找到相关内容" }];
   } catch (e) {
     var msg = String((e && e.message) || e);
@@ -442,24 +599,52 @@ function rewritePlaylist(text, playlistUrl) {
   return out.join("\n");
 }
 
-// 构建代理线：手机侧取清单 → 改写 → POST /up 暂存 → 回播放器用的 /p 地址。任一步失败回 ""。
+// 手机侧取清单正文：先 https、失败或非清单再 http 明文（yd-hls 明文清单与 https 逐字一致，
+// 而用户报的是 TLS 失败——明文这一跳没有 TLS 可拦）。都失败回 ""。
+async function fetchPlaylistText(playlistUrl, referer) {
+  var variants = [playlistUrl];
+  if (playlistUrl.indexOf("https://") === 0) variants.push("http://" + playlistUrl.slice(8));
+  for (var i = 0; i < variants.length; i++) {
+    try {
+      var res = await Widget.http.get(variants[i], { headers: { "User-Agent": UA, "Referer": referer || BASE + "/" } });
+      var body = res && res.data != null ? String(res.data) : "";
+      if (body.indexOf("#EXTM3U") === 0) return body;
+    } catch (e) {}
+  }
+  return "";
+}
+
+// 构建代理线：手机侧取清单 → 改写 → POST /up 暂存 → **回读校验**（Cache API 是 PoP 本地
+// 缓存，存取跨 PoP 会 404；回读失败重存一次）。成功回 {url}，失败回 {fail: 短码}，
+// 短码会标到直连线名上供用户回报：no_post / probe_0 / pl_fail / up_fail / p_404。
 async function buildRelayLine(playlistUrl, referer) {
   try {
-    if (!Widget.http.post) return "";
-    if (!(await probeDjWorker())) return "";
-    var res = await Widget.http.get(playlistUrl, { headers: { "User-Agent": UA, "Referer": referer || BASE + "/" } });
-    var body = res && res.data != null ? String(res.data) : "";
-    if (body.indexOf("#EXTM3U") !== 0) return "";
+    if (!Widget.http.post) return { fail: "no_post" };
+    if (!(await probeDjWorker())) return { fail: "probe_0" };
+    var body = await fetchPlaylistText(playlistUrl, referer);
+    if (!body) return { fail: "pl_fail" };
     var rewritten = rewritePlaylist(body, playlistUrl);
-    var up = await Widget.http.post(DJ_WORKER + "/up", rewritten, { headers: { "Content-Type": "text/plain; charset=utf-8", "User-Agent": UA } });
-    var upBody = up && up.data != null ? String(up.data) : "";
-    var parsed = null;
-    try { parsed = JSON.parse(upBody); } catch (e) {}
-    var relay = parsed && parsed.url ? String(parsed.url) : "";
-    if (relay.indexOf(DJ_WORKER + "/p/") !== 0) return "";
-    return relay;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      var relay = "";
+      try {
+        var up = await Widget.http.post(DJ_WORKER + "/up", rewritten, { headers: { "Content-Type": "text/plain; charset=utf-8", "User-Agent": UA } });
+        var upBody = up && up.data != null ? String(up.data) : "";
+        var parsed = null;
+        try { parsed = JSON.parse(upBody); } catch (e) {}
+        relay = parsed && parsed.url ? String(parsed.url) : "";
+      } catch (e) {}
+      if (relay.indexOf(DJ_WORKER + "/p/") !== 0) return { fail: "up_fail" };
+      // 回读校验：同设备出口回读能命中，播放器随后取同一地址的命中率才高
+      try {
+        var chk = await Widget.http.get(relay, { headers: { "User-Agent": UA } });
+        var chkBody = chk && chk.data != null ? String(chk.data) : "";
+        if (chkBody.indexOf("#EXTM3U") === 0) return { url: relay };
+      } catch (e) {}
+      if (attempt === 1) return { fail: "p_404" };
+    }
+    return { fail: "p_404" };
   } catch (e) {
-    return "";
+    return { fail: "exc" };
   }
 }
 
@@ -475,12 +660,22 @@ async function loadResource(params) {
     var url = await resolvePlayFromPage(raw);
     if (!url) return [];
     var lines = [];
-    // 代理线排前（真机 TLS 报错的正解）；构建失败自动跳过，只回直连线
+    // 代理线排前（真机 TLS 报错的正解）；构建失败自动跳过，并把原因短码标在直连线名上
     var relay = await buildRelayLine(url, raw);
-    if (relay) {
-      lines.push({ name: "代理", url: relay, playerType: "app", customHeaders: { "User-Agent": UA } });
+    if (relay.url) {
+      lines.push({ name: "代理", url: relay.url, playerType: "app", customHeaders: { "User-Agent": UA } });
     }
-    lines.push({ name: relay ? "直连" : "播放", url: url, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": raw } });
+    // 明文线：清单走 http（无 TLS），分片仍是清单内的 https 地址；
+    // 若设备侧干扰只针对 yd-hls 的 SNI/TLS，这一线可直接通
+    if (url.indexOf("https://") === 0) {
+      lines.push({ name: "明文", url: "http://" + url.slice(8), playerType: "app", customHeaders: { "User-Agent": UA, "Referer": raw } });
+    }
+    lines.push({
+      name: relay.url ? "直连" : ("直连(代理失败:" + (relay.fail || "?") + ")"),
+      url: url,
+      playerType: "app",
+      customHeaders: { "User-Agent": UA, "Referer": raw }
+    });
     return lines;
   } catch (e) {
     return [];

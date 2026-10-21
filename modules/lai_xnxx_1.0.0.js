@@ -3,7 +3,11 @@
 // 后端: XNXX 多镜像 (蜘蛛口径依次兜底 xnxx.health / www.xnxx.health / xnxx.com / www.xnxx.com), HTML 正则解析。
 // 分类: 蜘蛛 home() 动态抓首页 /tags/<x> 链接, 实测首页只链到 /tags 索引页、抓不到单项,
 //       蜘蛛实际走 FALLBACK_CATS 兜底表; 模块按此实测口径把蜘蛛的 31 个兜底分类原样烤入 enumeration。
-// 分类/搜索 URL: /search/<tid>; 详情页 setVideoUrlHigh 直链 mp4 (最高档优先)。
+// 分类/搜索 URL: /search/<tid>。
+// 画质 (二轮修复, 2026-10-21 抽测 9 条坐实): setVideoUrlHigh 的 mp4 全是 360p (另有 240p Low),
+//   真高清在详情页 setVideoHLS 的主清单里 —— 抽测 6/9 有 1920x1080 变体、2/9 最高 720p、1/9 最高 480p,
+//   变体为普通 .ts VOD HLS, ffprobe 实测分辨率与标称一致。loadDetail 改走 HLS 选档:
+//   拉主清单挑变体 (≤1080 最高 → 720 → 其余最高), 失败回退主清单本身, 再失败回退 mp4 High。
 // 翻页与蜘蛛不同 (实测修正): 蜘蛛的 ?p=N 已被站方忽略 (回第 1 页内容), 现行分页是路径式
 //   /search/<tid>/<N-1> (站方分页条实证: 标 "2" 的链接是 /1, 第 1 页为裸路径或 /0)。
 // 列表取块窗口用蜘蛛自带的长块兜底形态 (现行版式真标题在块尾 .thumb-under 里, 短块形态会切掉它), 详见 parseList 注释。
@@ -13,9 +17,9 @@
 WidgetMetadata = {
   id: "lai_xnxx",
   title: "XNXX",
-  description: "XNXX：31 个分类浏览与站内搜索，详情解析最高清 mp4 直链",
+  description: "XNXX：31 个分类浏览与站内搜索，详情走 HLS 高清（1080p 优先），mp4 兜底",
   author: "lai",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
   site: "https://xnxx.health",
   detailCacheDuration: 180,
@@ -115,6 +119,14 @@ async function getText(path) {
     } catch (e) { /* 换下一个镜像 */ }
   }
   return "";
+}
+
+// 拉绝对地址 (HLS 主清单在 CDN 域名上, 不走镜像轮换)
+async function getUrl(url) {
+  try {
+    var res = await Widget.http.get(url, { headers: pageHeaders() });
+    return res && res.data != null ? String(res.data) : "";
+  } catch (e) { return ""; }
 }
 
 function absUrl(u) {
@@ -231,7 +243,51 @@ async function search(params) {
   }
 }
 
-// 沿用蜘蛛 extractVideoUrl: setVideoUrlHigh 优先 (最高档)
+// 详情页 HLS 主清单地址 (setVideoHLS); 真高清在这里, mp4 High 只有 360p
+function extractHlsMaster(html) {
+  var m = html.match(/setVideoHLS\(['"]([^'"]+)['"]\)/i);
+  return m ? m[1].replace(/\\\//g, "/") : "";
+}
+
+function resolveAgainst(base, uri) {
+  uri = String(uri || "").trim();
+  if (!uri) return "";
+  if (/^https?:\/\//i.test(uri)) return uri;
+  if (uri.indexOf("//") === 0) return "https:" + uri;
+  var b = String(base || "");
+  var cut = b.lastIndexOf("/");
+  return (cut > 8 ? b.slice(0, cut + 1) : b + "/") + uri;
+}
+
+// 从主清单挑变体: ≤1080 的最高档优先 (1080 → 720 → 480…), 全部超 1080 取最接近的一档;
+// 同高按 BANDWIDTH 大者。解析不到返回 ""。
+function pickHlsVariant(text, masterUrl) {
+  if (!text || text.indexOf("#EXT-X-STREAM-INF") < 0) return "";
+  var lines = String(text).split("\n");
+  var vars = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (line.indexOf("#EXT-X-STREAM-INF") !== 0) continue;
+    var rm = line.match(/RESOLUTION=(\d+)x(\d+)/i);
+    var bm = line.match(/BANDWIDTH=(\d+)/i);
+    var uri = "";
+    for (var j = i + 1; j < lines.length; j++) {
+      var t = lines[j].trim();
+      if (t) { uri = t; break; }
+    }
+    if (uri) vars.push({
+      h: rm ? parseInt(rm[2], 10) : 0,
+      bw: bm ? parseInt(bm[1], 10) : 0,
+      url: resolveAgainst(masterUrl, uri)
+    });
+  }
+  if (!vars.length) return "";
+  vars.sort(function (a, b) { return (b.h - a.h) || (b.bw - a.bw); });
+  for (var k = 0; k < vars.length; k++) { if (vars[k].h <= 1080) return vars[k].url; }
+  return vars[vars.length - 1].url;
+}
+
+// 沿用蜘蛛 extractVideoUrl: setVideoUrlHigh 优先 (HLS 不可用时的兜底, 实测只有 360p)
 function extractVideoUrl(html) {
   var patterns = [
     /setVideoUrlHigh\(['"]([^'"]+)['"]\)/,
@@ -263,7 +319,14 @@ async function loadDetail(link) {
     var cm = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i)
       || html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/i);
     var cover = cm ? absUrl(cm[1]) : "";
-    var vurl = extractVideoUrl(html);
+    var vurl = "";
+    var hlsMaster = extractHlsMaster(html);
+    if (hlsMaster) {
+      // 先拉主清单选最高变体直出 (避免播放器自适应从低档起播); 拉不到清单就把主清单本身交给播放器
+      var mtext = await getUrl(hlsMaster);
+      vurl = pickHlsVariant(mtext, hlsMaster) || hlsMaster;
+    }
+    if (!vurl) vurl = extractVideoUrl(html);
     if (!vurl) {
       return { id: id, type: "url", title: title, posterPath: cover, coverUrl: cover, backdropPath: cover, description: "未找到播放地址" };
     }
