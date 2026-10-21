@@ -5,7 +5,8 @@
 // 每字节减 k 再 JSON.parse 得 videoUrl（decodeEv 算法与蜘蛛一致）。
 // 注意：站方播放清单与分片均为 PNG 包装（内嵌 roUd chunk 载荷），站方靠自家
 // Shaka 播放器的响应过滤器在客户端解包；普通播放器拿到的是 PNG 图片。
-// 本模块按蜘蛛口径返回 /api/hls/<id> 地址与蜘蛛的播放请求头，详见移植报告。
+// 播放经 rou-hls Worker 拆包（PNG 伪装 HLS 服务端还原）：先在手机侧解析 /api/hls 的 302
+// 拿到 CDN 清单地址（rou.video 拦 Workers 出口、清单/分片不拦），解析不到才交 Worker 兜底链。
 
 WidgetMetadata = {
   id: "lai_rou",
@@ -221,6 +222,31 @@ function extractEv(html) {
   return null;
 }
 
+var ROU_WORKER = "https://rou-hls.li768435813.workers.dev";
+// 把 /api/hls/<id> 换成 rou-hls Worker 的 /v 地址。先尝试在手机侧解析 302：
+// rou.video 对 Workers 出口回 403，但手机出口可达；若运行时暴露了 Location/最终 URL，
+// 就把 CDN 的 index.png 清单地址交给 Worker 直连拆包（已实测通）；
+// 拿不到就把 api 地址交给 Worker 的兜底中转链。
+async function rouWorkerUrl(apiUrl, pageUrl) {
+  var resolved = "";
+  try {
+    var res = await Widget.http.get(apiUrl, { headers: playHeaders() });
+    var cands = [];
+    if (res) {
+      var h = res.headers || res.header || {};
+      cands.push(h.location, h.Location);
+      cands.push(res.finalUrl, res.responseUrl, res.url, res.requestURL);
+      if (res.request) cands.push(res.request.responseURL, res.request.url);
+    }
+    for (var i = 0; i < cands.length; i++) {
+      var c = cands[i];
+      if (typeof c === "string" && c.indexOf("index.png") > -1) { resolved = c; break; }
+    }
+  } catch (_) {}
+  var target = resolved || apiUrl;
+  return ROU_WORKER + "/v?u=" + encodeURIComponent(target) + "&ref=" + encodeURIComponent(pageUrl);
+}
+
 async function loadDetail(link) {
   var url = absUrl(String(link || ""));
   if (!url) {
@@ -248,6 +274,8 @@ async function loadDetail(link) {
     }
     // 与蜘蛛 play() 兼容兜底一致：旧版 videoUrl 是封面 jpg 时替换为 .m3u8
     videoUrl = absUrl(String(videoUrl).replace(".jpg", ".m3u8"));
+    // PNG 伪装 HLS：交给 rou-hls Worker 拆包成普通 HLS 再播
+    videoUrl = await rouWorkerUrl(videoUrl, url);
     return {
       id: url,
       type: "detail",
