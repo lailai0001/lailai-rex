@@ -3,20 +3,21 @@
 // 后端: https://chaturbate.com 站方前端公开接口
 //       列表 /api/ts/roomlist/room-list/ (游客视图), 详情 /api/chatvideocontext/{username}/。
 //       只收录 current_show==='public' 且无密码的公开直播间; 私密/票秀/密码房不收, 不伪造任何凭证。
-// 播放差异 (重要): 猫源第二版靠猫服务端本地代理把 LL-HLS 主列表裁到最高档再返回;
-//       REX 没有服务端, 本模块 loadDetail 直接返回站方主列表 (hls_source) URL,
-//       最高档 (1080p) 在列表内, 由播放器自选档位 —— 可能从低档起播, 画质不如猫源锁定版, 详见报告。
+// 播放 (v1.0.1 修复): 站方只有 LL-HLS 流, REX 播放器真机播不了 (EXT-X-PART/fMP4 低延迟清单)。
+//       新链路: 模块在手机侧拉主清单 (token 一次性/闲置即死, 只能现拉) 裁出最高档视频 + 其音频组,
+//       把媒体清单地址交给 chaturbate-hls Worker 降格为普通 HLS (删 LL 标签, 分片播放器直拉 CDN);
+//       裁档失败时回退直返站方主列表。详见 FIX_chaturbate.md。
 // 搜索: 复用列表接口的 keywords 参数 (站内搜索, 匹配用户名/标题)。
 
 WidgetMetadata = {
   id: "lai_chaturbate",
   title: "Chaturbate",
-  description: "Chaturbate 公开直播：大类/地区/年龄/标签共 48 个分类，播放直连站方主列表",
+  description: "Chaturbate 公开直播：大类/地区/年龄/标签共 48 个分类，播放经 chaturbate-hls Worker 降格普通 HLS 并锁定最高档",
   author: "lai",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
   site: "https://chaturbate.com",
-  detailCacheDuration: 180,
+  detailCacheDuration: 60,
   modules: [
   {
     "title": "精选",
@@ -483,6 +484,72 @@ async function getDossier(username) {
   } catch (e) { return null; }
 }
 
+var CB_WORKER = "https://chaturbate-hls.li768435813.workers.dev";
+
+// 主清单内的相对 URI -> 绝对地址 (chunklist 是根相对路径, 自带 ?session=)
+function absEdge(u, masterUrl) {
+  var s = String(u || "");
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  var origin = (String(masterUrl).match(/^https?:\/\/[^/]+/i) || [""])[0];
+  if (s.charAt(0) === "/") return origin + s;
+  var dir = String(masterUrl).split("?")[0].replace(/[^/]*$/, "");
+  return dir + s;
+}
+
+// 手机侧拉主清单, 裁出最高档视频 + 其 AUDIO 组里默认的一路音频,
+// 组装成 chaturbate-hls Worker 的 /master 地址 (Worker 负责把 LL 媒体清单降格为普通 HLS)。
+// 任一步失败返 "", 由 loadDetail 回退直返站方主列表。
+async function buildPlayUrl(hlsSource) {
+  try {
+    var text = await fetchText(hlsSource);
+    if (!text || text.indexOf("#EXTM3U") !== 0) return "";
+    var lines = text.split("\n");
+    var audios = [];
+    var variants = [];
+    for (var i = 0; i < lines.length; i++) {
+      var L = String(lines[i]).replace(/\s+$/g, "");
+      if (L.indexOf("#EXT-X-MEDIA:") === 0 && /TYPE=AUDIO/.test(L)) {
+        var g = (L.match(/GROUP-ID="([^"]+)"/) || [])[1];
+        var mu = (L.match(/URI="([^"]+)"/) || [])[1];
+        if (g && mu) audios.push({ group: g, uri: mu, def: /DEFAULT=YES/.test(L) });
+      } else if (L.indexOf("#EXT-X-STREAM-INF:") === 0) {
+        var attrs = L.slice("#EXT-X-STREAM-INF:".length);
+        var uri = String(lines[i + 1] || "").replace(/\s+$/g, "");
+        var bw = parseInt((attrs.match(/BANDWIDTH=(\d+)/) || [])[1] || "0", 10);
+        if (uri) variants.push({ attrs: attrs, uri: uri, bw: bw });
+      }
+    }
+    if (!variants.length) return "";
+    variants.sort(function (x, y) { return y.bw - x.bw; });
+    var top = variants[0];
+    var vAbs = absEdge(top.uri, hlsSource);
+    var outAttrs = top.attrs;
+    var aAbs = "";
+    var ag = (outAttrs.match(/AUDIO="([^"]+)"/) || [])[1];
+    if (ag) {
+      var pick = null;
+      for (var k = 0; k < audios.length; k++) {
+        if (audios[k].group !== ag) continue;
+        if (audios[k].def) { pick = audios[k]; break; }
+        if (!pick) pick = audios[k];
+      }
+      if (pick) aAbs = absEdge(pick.uri, hlsSource);
+    }
+    if (aAbs) {
+      outAttrs = /AUDIO="[^"]*"/.test(outAttrs)
+        ? outAttrs.replace(/AUDIO="[^"]*"/, 'AUDIO="aac"')
+        : outAttrs + ',AUDIO="aac"';
+    } else {
+      outAttrs = outAttrs.replace(/,?AUDIO="[^"]*"/, "").replace(/^,/, "").replace(/,,+/g, ",");
+    }
+    var url = CB_WORKER + "/master?v=" + encodeURIComponent(vAbs);
+    if (aAbs) url += "&a=" + encodeURIComponent(aAbs);
+    url += "&inf=" + encodeURIComponent(outAttrs);
+    return url;
+  } catch (e) { return ""; }
+}
+
 async function loadDetail(link) {
   var username = cleanUsername(link);
   if (!username) {
@@ -501,6 +568,8 @@ async function loadDetail(link) {
       description: d ? "房间当前状态: " + (d.room_status || "未知") + "，未公开直播" : "房间已下线或不存在"
     };
   }
+  var playUrl = "";
+  try { playUrl = await buildPlayUrl(d.hls_source); } catch (e) { /* 兜底直连 */ }
   return {
     id: pageUrl,
     type: "detail",
@@ -510,8 +579,8 @@ async function loadDetail(link) {
     coverUrl: cover,
     backdropPath: cover,
     description: "直播中 · " + (d.num_viewers || 0) + "人观看",
-    // REX 无服务端: 直返站方 LL-HLS 主列表 (含 240p~1080p 多档, 播放器自选), 不做猫源的裁档锁定
-    videoUrl: d.hls_source,
+    // 主通道: 经 chaturbate-hls Worker 降格的普通 HLS (锁定最高档); 裁档失败回退站方 LL 主列表
+    videoUrl: playUrl || d.hls_source,
     playerType: "app",
     customHeaders: {
       "User-Agent": UA,

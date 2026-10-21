@@ -3,6 +3,9 @@
 // 原理与蜘蛛一致：公开 JSON API（响应为 base64url + XOR 加密，key 随响应下发）取分类/列表/详情/搜索；
 // 播放地址与封面签名需"指纹登录"（随机指纹，站方公开的游客登录方式，与蜘蛛相同，非伪造凭证）：
 //   播放：GET /api/v2/home/user/video/play/url → masterUrl + 视频 CDN 列表拼接成完整 m3u8；
+//   选档（2026-10-21 画质修复）：play/url 只回 master/720p/480p 三个字段、无 1080p（实测多样本主列表
+//   只有 1280x720 与 854x480 两档）；旧版直返主列表、播放器自适应常停在 480 档显得低清，
+//   现改为 loadDetail 内拉主列表解析变体、直返最高档（720）媒体列表，失败回退主列表。
 //   封面：thumb 是 .enc 加密图，POST /api/v2/home/user/cdn/sign 批量签名后才是可访问的真实图片地址。
 // 蜘蛛里的 PoW vv_challenge cookie 流程在现行调用链中实际未被使用（公开 API 不带 cookie 也可调用），故未移植。
 // 蜘蛛里的 uu-proxy Worker 仅用于旧版相对路径播放地址，现行主流程（数字 id → play/url API）不走它，故未使用。
@@ -446,6 +449,62 @@ async function getCdnList() {
   return _cdnList;
 }
 
+// 相对地址按 base 的 origin+目录拼接（主列表里的变体地址是相对路径）
+function resolveRelUrl(base, rel) {
+  var r = String(rel || "").trim();
+  if (!r) return "";
+  if (/^https?:\/\//i.test(r)) return r;
+  var m = String(base).match(/^(https?:\/\/[^/]+)(\/.*\/)?[^/]*$/);
+  if (!m) return r;
+  if (r.charAt(0) === "/") return m[1] + r;
+  return m[1] + (m[2] || "/") + r;
+}
+
+// 主列表选档：优先取 ≤1080 的最高档（本站实测只有 720/480 两档），没有 ≤1080 的取最接近 1080 的一档，
+// 再没有分辨率信息按 BANDWIDTH 最高取。直返变体媒体列表，避免播放器拿主列表自适应时停在低档。
+// 拉取/解析失败一律回退主列表原地址（与旧行为一致）。
+async function pickBestVariant(masterUrl) {
+  try {
+    if (!masterUrl || !/\.m3u8|_play/i.test(masterUrl)) return masterUrl;
+    var txt = await httpGetText(masterUrl, { "User-Agent": UA, "Referer": BASE + "/" });
+    if (!txt || txt.indexOf("#EXT-X-STREAM-INF") === -1) return masterUrl;
+    var lines = String(txt).split(/\r?\n/);
+    var variants = [];
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].indexOf("#EXT-X-STREAM-INF") !== 0) continue;
+      var bwM = lines[i].match(/BANDWIDTH=(\d+)/);
+      var resM = lines[i].match(/RESOLUTION=(\d+)x(\d+)/);
+      var uri = "";
+      for (var j = i + 1; j < lines.length; j++) {
+        var ln = String(lines[j]).trim();
+        if (!ln) continue;
+        if (ln.charAt(0) !== "#") uri = ln;
+        break;
+      }
+      if (uri) {
+        variants.push({
+          uri: uri,
+          bw: bwM ? parseInt(bwM[1], 10) : 0,
+          h: resM ? parseInt(resM[2], 10) : 0
+        });
+      }
+    }
+    if (!variants.length) return masterUrl;
+    var le = variants.filter(function (v) { return v.h > 0 && v.h <= 1080; });
+    var pick = null;
+    if (le.length) {
+      pick = le.sort(function (a, b) { return (b.h - a.h) || (b.bw - a.bw); })[0];
+    } else {
+      var gt = variants.filter(function (v) { return v.h > 1080; });
+      if (gt.length) pick = gt.sort(function (a, b) { return (a.h - b.h) || (b.bw - a.bw); })[0];
+      else pick = variants.sort(function (a, b) { return b.bw - a.bw; })[0];
+    }
+    return resolveRelUrl(masterUrl, pick.uri) || masterUrl;
+  } catch (e) {
+    return masterUrl;
+  }
+}
+
 async function loadDetail(link) {
   var s = String(link || "");
   try {
@@ -492,6 +551,8 @@ async function loadDetail(link) {
     if (!videoUrl) {
       return { id: url, type: "url", title: title || "解析失败", description: "未找到播放地址" };
     }
+    // 选档：主列表（variant=master）解析出最高档变体直返（本站最高 720 档），避免播放器自适应停在 480
+    videoUrl = await pickBestVariant(videoUrl);
     return {
       id: url,
       type: "detail",

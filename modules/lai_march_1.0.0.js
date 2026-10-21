@@ -8,6 +8,10 @@
 //     title/coverUrl/url(m3u8)，故视频详情改用列表自带字段组装，不依赖 intro。
 //   - 有声 intro 无 chapters 数组，靠 latestReadChapterUrl 直给 mp3（蜘蛛同款兜底）；
 //     若 intro 带 chapters 则逐章走 /audio/app/audio/chapter 换地址（蜘蛛同款）。
+// 2026-10-21 真机修复（有声播不了）：detail 改对齐已验收的 mitao 分集形态——
+//   只给 episodeItems/childItems（child 的 id==link==单集引用），不再给 episodes 键；
+//   单集作品在 detail 里直接解出 videoUrl（走已证实的 detail 直达形态）；
+//   loadResource 改为递归搜集 params 全部字符串逐个试解；loadDetail 收到单集引用也能直解。
 //   - 漫画/小说蜘蛛本身不提供可播内容（vod_play_url 为空），本模块同口径：只出详情信息。
 
 WidgetMetadata = {
@@ -355,6 +359,20 @@ function queryParam(q, key) {
   return "";
 }
 
+// 单集引用：march://audioep/<章节id>[?u=<直链>]（u 有则免接口）
+function epRefOf(chid, directUrl) {
+  var s = "march://audioep/" + chid;
+  if (directUrl) s += "?u=" + encodeURIComponent(directUrl);
+  return s;
+}
+
+// 章节 id -> 播放地址（蜘蛛同款 /audio/app/audio/chapter）
+async function chapterUrlOf(chid) {
+  if (chid == null || chid === "") return "";
+  var m = await apiGet("/audio/app/audio/chapter", { id: chid });
+  return m ? (m.chapterUrl || m.url || "") : "";
+}
+
 async function loadDetail(link) {
   var ref = parseRef(link);
   try {
@@ -382,40 +400,99 @@ async function loadDetail(link) {
       };
     }
 
+    if (ref.kind === "audioep") {
+      // 运行时若拿单集引用来走 loadDetail，也直接给可播 detail（与 loadResource 双保险）
+      var durl = queryParam(ref.query, "u") || (await chapterUrlOf(ref.id));
+      if (!durl) {
+        return { id: String(link), type: "url", title: "未找到播放地址", link: String(link) };
+      }
+      return {
+        id: String(link),
+        type: "detail",
+        title: "March有声",
+        link: String(link),
+        videoUrl: durl,
+        playerType: "app",
+        customHeaders: { "User-Agent": UA }
+      };
+    }
+
     if (ref.kind === "audio") {
       var model = await apiGet("/audio/app/audio/intro", { id: ref.id });
       if (!model) return { id: String(link), type: "url", title: "加载失败", link: String(link) };
       var acover = coverOf(model);
-      var episodes = [];
+      var atitle = model.title || "";
+      var adesc = model.intro || model.brief || "";
+      // 原始集列表：[{ name, chid, directUrl }]
+      var rawEps = [];
       var chapters = Array.isArray(model.chapters) ? model.chapters : [];
       for (var i = 0; i < chapters.length; i++) {
         var ch = chapters[i];
         if (!ch || ch.id == null) continue;
-        episodes.push({
+        rawEps.push({
           name: ch.title || ("第" + (ch.order || i + 1) + "集"),
-          id: ch.id,
-          link: "march://audioep/" + ch.id
+          chid: ch.id,
+          directUrl: ""
         });
       }
-      if (!episodes.length && model.latestReadChapterUrl) {
-        var epName = model.latestReadChapter || "第1集";
-        episodes.push({
-          name: epName,
-          id: model.latestReadChapterId || ref.id,
-          link: "march://audioep/" + (model.latestReadChapterId || ref.id) + "?u=" + encodeURIComponent(model.latestReadChapterUrl)
+      if (!rawEps.length && model.latestReadChapterUrl) {
+        rawEps.push({
+          name: model.latestReadChapter || "第1集",
+          chid: model.latestReadChapterId || ref.id,
+          directUrl: model.latestReadChapterUrl
         });
       }
-      return {
+      if (!rawEps.length) {
+        return { id: String(link), type: "url", title: atitle, posterPath: acover, coverUrl: acover, backdropPath: acover, description: adesc, link: String(link) };
+      }
+      // 单集：detail 里直接解出 videoUrl（已证实的直达形态，不依赖 stream 模块调用形态）
+      if (rawEps.length === 1) {
+        var oneUrl = rawEps[0].directUrl || (await chapterUrlOf(rawEps[0].chid));
+        if (oneUrl) {
+          return {
+            id: String(link),
+            type: "detail",
+            title: atitle,
+            link: String(link),
+            posterPath: acover,
+            coverUrl: acover,
+            backdropPath: acover,
+            videoUrl: oneUrl,
+            playerType: "app",
+            description: adesc,
+            customHeaders: { "User-Agent": UA }
+          };
+        }
+      }
+      // 多集（或单集直解失败）：对齐 mitao 形态——episodeItems/childItems，child 的 id==link==单集引用
+      var childItems = rawEps.map(function (ep, idx) {
+        var r = epRefOf(ep.chid, ep.directUrl);
+        return {
+          id: r,
+          title: ep.name,
+          name: ep.name,
+          mediaType: "movie",
+          seasonNumber: 1,
+          episodeNumber: idx + 1,
+          link: r
+        };
+      });
+      var aresult = {
         id: String(link),
         type: "url",
-        title: model.title || "",
+        title: atitle,
+        name: atitle,
         posterPath: acover,
         coverUrl: acover,
         backdropPath: acover,
-        description: model.intro || model.brief || "",
-        episodes: episodes,
+        description: adesc,
+        mediaType: "tv",
+        playerType: "app",
         link: String(link)
       };
+      aresult.episodeItems = childItems;
+      aresult.childItems = childItems;
+      return aresult;
     }
 
     if (ref.kind === "comic" || ref.kind === "novel") {
@@ -442,29 +519,66 @@ async function loadDetail(link) {
   }
 }
 
+// 递归搜集 params 里的全部字符串（运行时传参形态不完全确定，逐个试解，学 MISSAV 的防御写法）
+function collectStrings(v, out, depth) {
+  if (v == null || depth > 4) return out;
+  if (typeof v === "string") { if (v) out.push(v); return out; }
+  if (typeof v !== "object") return out;
+  if (Array.isArray(v)) {
+    for (var i = 0; i < v.length; i++) collectStrings(v[i], out, depth + 1);
+    return out;
+  }
+  var keys = Object.keys(v);
+  for (var j = 0; j < keys.length; j++) collectStrings(v[keys[j]], out, depth + 1);
+  return out;
+}
+
 // 有声播放解析（stream 模块）：
-// - 单集链接带 u= 时直返；带章节 id 时走 /audio/app/audio/chapter 换地址（蜘蛛同款）
-// - 收到整部有声链接时，逐集解析（连续 3 集拿不到地址就停，与禁果模块同口径）
+// - 单集引用带 u= 时直返；带章节 id 时走 /audio/app/audio/chapter 换地址（蜘蛛同款）
+// - 收到整部有声引用时，逐集解析（连续 3 集拿不到地址就停，与禁果模块同口径）
+// - 入参形态不确定时：递归搜集所有字符串逐个试解；裸数字 id 先按作品试、再按章节试
 async function loadResource(params) {
   params = params || {};
-  var raw = params.link || params.url || params.id || "";
-  var ref = parseRef(raw);
   try {
-    if (ref.kind === "audioep") {
-      var direct = queryParam(ref.query, "u");
+    var cands = [];
+    var pri = [params.link, params.url, params.id];
+    for (var p = 0; p < pri.length; p++) if (typeof pri[p] === "string" && pri[p]) cands.push(pri[p]);
+    collectStrings(params, cands, 0);
+    var seen = {};
+    var uniq = [];
+    for (var c = 0; c < cands.length; c++) {
+      if (!seen[cands[c]]) { seen[cands[c]] = 1; uniq.push(cands[c]); }
+    }
+
+    var epRef = null, workRef = null, bareId = "";
+    for (var i = 0; i < uniq.length; i++) {
+      var r = parseRef(uniq[i]);
+      if (r.kind === "audioep" && !epRef) epRef = { str: uniq[i], ref: r };
+      else if (r.kind === "audio" && !workRef) workRef = { str: uniq[i], ref: r };
+      else if (!bareId && /^\d{6,}$/.test(uniq[i])) bareId = uniq[i];
+    }
+
+    if (epRef) {
+      var direct = queryParam(epRef.ref.query, "u");
       if (direct) return [{ name: "播放", url: direct, playerType: "app", customHeaders: { "User-Agent": UA } }];
-      var chModel = await apiGet("/audio/app/audio/chapter", { id: ref.id });
-      var url = chModel ? (chModel.chapterUrl || "") : "";
+      var url = await chapterUrlOf(epRef.ref.id);
       if (!url) return [];
       return [{ name: "播放", url: url, playerType: "app", customHeaders: { "User-Agent": UA } }];
     }
-    if (ref.kind === "audio") {
-      var detail = await loadDetail(raw);
-      var eps = (detail && detail.episodes) || [];
+
+    var workStr = workRef ? workRef.str : (bareId ? "march://audio/" + bareId : "");
+    if (workStr) {
+      var detail = await loadDetail(workStr);
+      if (!detail) return [];
+      // 单集直达 detail：直接就是可播资源
+      if (detail.type === "detail" && detail.videoUrl) {
+        return [{ name: "播放", url: detail.videoUrl, playerType: "app", customHeaders: { "User-Agent": UA } }];
+      }
+      var items = detail.childItems || detail.episodeItems || [];
       var out = [];
       var misses = 0;
-      for (var i = 0; i < eps.length; i++) {
-        var one = await loadResource({ link: eps[i].link });
+      for (var j = 0; j < items.length; j++) {
+        var one = await loadResource({ link: items[j].link });
         if (!one.length) {
           misses++;
           if (misses >= 3) break;
@@ -472,12 +586,18 @@ async function loadResource(params) {
         }
         misses = 0;
         out.push({
-          name: eps[i].name,
+          name: items[j].name || items[j].title || ("第" + (j + 1) + "集"),
           description: detail.title || "",
           url: one[0].url,
           playerType: "app",
           customHeaders: { "User-Agent": UA }
         });
+      }
+      if (out.length) return out;
+      // 兜底：传进来的裸数字也许是章节 id 而非作品 id
+      if (bareId && !workRef) {
+        var curl = await chapterUrlOf(bareId);
+        if (curl) return [{ name: "播放", url: curl, playerType: "app", customHeaders: { "User-Agent": UA } }];
       }
       return out;
     }

@@ -1,12 +1,12 @@
-// 7mmtv for REX (lai_7mmtv v1.0.0)
+// 7mmtv for REX (lai_7mmtv v1.1.0)
 // 移植自 mira-cat 蜘蛛 7mmtv.js（只读蓝图），后端 https://7mmtv.sx 。
 
 WidgetMetadata = {
   "id": "lai_7mmtv",
   "title": "7mmtv",
-  "description": "7mmtv：有码/无码破解/中字/无码/素人/国产/韩国直播与片商、标签分类；SW/VH 线走 mmtv-vidhide Worker 播放",
+  "description": "7mmtv：有码/无码破解/中字/无码/素人/国产/韩国直播与片商、标签分类；详情按站方线路（SW/VH/DO/SP）分条可选，SW/VH 走 mmtv-vidhide Worker 播放",
   "author": "lai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "requiredVersion": "0.0.1",
   "site": "https://7mmtv.sx",
   "detailCacheDuration": 180,
@@ -1530,6 +1530,15 @@ WidgetMetadata = {
           "value": "1"
         }
       ]
+    },
+    {
+      "id": "loadResource",
+      "title": "7mmtv播放源",
+      "description": "播放时按所选线路实时解析地址",
+      "functionName": "loadResource",
+      "type": "stream",
+      "cacheDuration": 0,
+      "params": []
     }
   ],
   "search": {
@@ -1554,11 +1563,13 @@ var CATS_DATA = [{"type_id":"list:censored","type_name":"有碼AV"},{"type_id":"
 
 // 后端：7mmtv.sx（自研 PHP CMS，SSR 直出）。移植自 mira-cat 蜘蛛 7mmtv.js
 // （含 2026-10-21 二轮修复：W 线 hls4 验档、同片借线、Worker 探活重排）。
-// 播放：SW/VH（vidhide 系）走已部署的 mmtv-vidhide Worker 全链代理；
-// DO（DoodStream，Turnstile 门禁）/SP（站方 play.php 空壳）无可验证直链，
-// REX 无嗅探兜底，帖子只有这两类线时返回"未找到播放地址"。
-// REX 详情只承载一条 videoUrl：取排序后第一条可用 W 线的 CD1；
-// 多 CD 帖在 REX 里只出第一集（线路全集见猫源版）。
+// 播放：详情按站方线路分条出 episodes（线路名用站方原名 SW/VH/DO/SP，
+// 多 CD 帖同线下按 CD 分条），loadResource（stream 模块）按所选线路解析，
+// 结构与包内已验通的 jinguo/yeguo/聚合短剧 episodes+loadResource 模式一致。
+// SW/VH（vidhide 系）走已部署的 mmtv-vidhide Worker 全链代理（默认首选线与
+// 改造前单 videoUrl 完全同一条地址）；DO（DoodStream，Turnstile 门禁）/
+// SP（站方 play.php 空壳）无可验证直链，按蜘蛛 play() 的 parse:1 口径把
+// embed 地址原样交播放器嗅探兜底。
 
 var HOST = "https://7mmtv.sx";
 var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
@@ -2067,65 +2078,149 @@ async function orderWithProbe(groups, referer) {
   return { order: order, anyW: true, wAlive: false };
 }
 
+// ---------- 线路组装（loadDetail 与 loadResource 共用，与蜘蛛 detail 同口径） ----------
+// 返回 { name, pic, desc, lines: [{ name, kind, parts: [{part, embed}] }] }；
+// lines 已按探活排序（可用 W 线在前，默认首选即改造前的单 videoUrl 那条），
+// W 线 hls4 验档、同片借线逻辑与改造前完全一致，未改动。
+async function assembleLines(durl) {
+  var html = await getPage(durl, 300000);
+  if (!html) return null;
+  var nameM = html.match(/<h1 class="fullvideo-title[^"]*">([\s\S]*?)<\/h1>/);
+  var name = nameM ? clean(nameM[1].replace(/<[^>]+>/g, "")) : durl;
+  var picM = html.match(/content_main_cover[^>]*>[\s\S]*?<img[^>]+src="([^"]+)"/) ||
+             html.match(/<meta property="og:image" content="([^"]+)"/);
+  var pic = picM ? absUrl(picM[1]) : "";
+  var descM = html.match(/<meta name="description" content="([^"]*)"/);
+  var code = codeOf(durl);
+
+  var allEmbeds = extractEmbeds(html);
+  var ownS = allEmbeds.filter(function (e) { return srvInfo(e).kind !== "W"; });
+  var wEmbeds = await filterViableW(allEmbeds.filter(function (e) { return srvInfo(e).kind === "W"; }), durl);
+  var groups = buildGroups(wEmbeds, ownS);
+  var ord = await orderWithProbe(groups, durl);
+  if (!ord.wAlive) {
+    var tv = await findViableTwinEmbeds(code, durl);
+    if (tv.length) {
+      wEmbeds = tv;
+      groups = buildGroups(wEmbeds, ownS);
+      ord = await orderWithProbe(groups, durl);
+    }
+  }
+  var lines = [];
+  for (var li = 0; li < ord.order.length; li++) {
+    var grp = groups[ord.order[li]];
+    if (!grp || !grp.parts.length) continue;
+    lines.push({ name: ord.order[li], kind: grp.kind, parts: grp.parts });
+  }
+  if (!lines.length) {
+    // 与蜘蛛兜底一致：无线可列时给一条 SP，指向详情页本身交播放器嗅探
+    lines.push({ name: "SP", kind: "S", parts: [{ srv: "42", part: 1, base: durl, embed: durl }] });
+  }
+  return { name: name, pic: pic, desc: descM ? clean(descM[1]) : "", lines: lines };
+}
+
+// 线路条目标识：mmtv7://<kind>/<线路名>/<part>/<多集标记>/<encEmbed>/<enc详情页>
+function lineToken(kind, lname, part, multi, embed, durl) {
+  return "mmtv7://" + kind + "/" + lname + "/" + part + "/" + (multi ? 1 : 0) + "/" +
+    encodeURIComponent(embed) + "/" + encodeURIComponent(durl);
+}
+function parseLineToken(raw) {
+  var m = String(raw || "").match(/^mmtv7:\/\/([WS])\/([^/]+)\/(\d+)\/([01])\/(.+)$/);
+  if (!m) return null;
+  var rest = m[5];
+  var slash = rest.lastIndexOf("/");
+  if (slash < 0) return null;
+  var embed = "", ref = "";
+  try {
+    embed = decodeURIComponent(rest.slice(0, slash));
+    ref = decodeURIComponent(rest.slice(slash + 1));
+  } catch (e) { return null; }
+  if (!embed) return null;
+  return { kind: m[1], name: m[2], part: parseInt(m[3], 10) || 1, multi: m[4] === "1", embed: embed, ref: ref || REFERER };
+}
+function lineDisplayName(tok) {
+  return tok.multi ? (tok.name + " CD" + tok.part) : tok.name;
+}
+function resourceOf(tok) {
+  var headers = { "User-Agent": UA, "Referer": tok.ref };
+  if (tok.kind === "W") {
+    // 与改造前单 videoUrl 完全一致的 Worker 全链地址
+    return {
+      name: lineDisplayName(tok),
+      url: MMTV_WORKER + "/v?u=" + encodeURIComponent(tok.embed) + "&r=" + encodeURIComponent(tok.ref),
+      playerType: "app",
+      customHeaders: headers
+    };
+  }
+  // S 线（DO/SP）：与蜘蛛 play() 的 parse:1 兜底同口径——无可验证直链，
+  // 把 embed 地址原样交播放器，由其 WebView 嗅探决定能否播
+  return { name: lineDisplayName(tok), url: tok.embed, playerType: "app", customHeaders: headers };
+}
+
 async function loadDetail(link) {
   var durl = absUrl(String(link || ""));
   try {
-    var html = await getPage(durl, 300000);
-    if (!html) return { id: durl, type: "url", title: "载入失败", description: "详情页为空" };
-    var nameM = html.match(/<h1 class="fullvideo-title[^"]*">([\s\S]*?)<\/h1>/);
-    var name = nameM ? clean(nameM[1].replace(/<[^>]+>/g, "")) : durl;
-    var picM = html.match(/content_main_cover[^>]*>[\s\S]*?<img[^>]+src="([^"]+)"/) ||
-               html.match(/<meta property="og:image" content="([^"]+)"/);
-    var pic = picM ? absUrl(picM[1]) : "";
-    var descM = html.match(/<meta name="description" content="([^"]*)"/);
-    var code = codeOf(durl);
-
-    var allEmbeds = extractEmbeds(html);
-    var ownS = allEmbeds.filter(function (e) { return srvInfo(e).kind !== "W"; });
-    var wEmbeds = await filterViableW(allEmbeds.filter(function (e) { return srvInfo(e).kind === "W"; }), durl);
-    var groups = buildGroups(wEmbeds, ownS);
-    var ord = await orderWithProbe(groups, durl);
-    if (!ord.wAlive) {
-      var tv = await findViableTwinEmbeds(code, durl);
-      if (tv.length) {
-        wEmbeds = tv;
-        groups = buildGroups(wEmbeds, ownS);
-        ord = await orderWithProbe(groups, durl);
+    var asm = await assembleLines(durl);
+    if (!asm) return { id: durl, type: "url", title: "载入失败", description: "详情页为空", link: durl };
+    var episodes = [];
+    for (var li = 0; li < asm.lines.length; li++) {
+      var ln = asm.lines[li];
+      var multi = ln.parts.length > 1;
+      for (var pi = 0; pi < ln.parts.length; pi++) {
+        var tok = lineToken(ln.kind, ln.name, ln.parts[pi].part, multi, ln.parts[pi].embed, durl);
+        episodes.push({
+          name: multi ? (ln.name + " CD" + ln.parts[pi].part) : ln.name,
+          id: tok,
+          link: tok
+        });
       }
-    }
-    // REX 只承载一条 videoUrl：取排序第一条线的第一集
-    for (var li = 0; li < ord.order.length; li++) {
-      var grp = groups[ord.order[li]];
-      if (!grp || !grp.parts.length) continue;
-      var e0 = grp.parts[0];
-      if (grp.kind === "W") {
-        var wurl = MMTV_WORKER + "/v?u=" + encodeURIComponent(e0.embed) + "&r=" + encodeURIComponent(durl);
-        return {
-          id: durl,
-          type: "detail",
-          title: name,
-          link: durl,
-          posterPath: pic,
-          coverUrl: pic,
-          backdropPath: pic,
-          videoUrl: wurl,
-          playerType: "app",
-          customHeaders: { "User-Agent": UA, "Referer": durl }
-        };
-      }
-      // 第一条就是 S 线（DO/SP）时后面不会有 W 线（顺序固定 W 在前）
-      break;
     }
     return {
       id: durl,
       type: "url",
-      title: name,
-      description: "未找到播放地址（仅 DO/SP 线，REX 无法嗅探兜底）",
-      posterPath: pic,
-      coverUrl: pic,
-      link: durl
+      title: asm.name,
+      link: durl,
+      posterPath: asm.pic,
+      coverUrl: asm.pic,
+      backdropPath: asm.pic,
+      description: asm.desc,
+      episodes: episodes
     };
   } catch (e) {
-    return { id: durl, type: "url", title: "请求错误", description: String((e && e.message) || e) };
+    return { id: durl, type: "url", title: "请求错误", description: String((e && e.message) || e), link: durl };
+  }
+}
+
+// stream 模块：按所选线路条目解析播放地址（结构与 jinguo/yeguo/聚合短剧模板一致）
+// - 传入线路条目 link（mmtv7://…）→ 只解析该条
+// - 传入详情页链接 → 返回全部线路条目（排序与详情一致，首条即默认线）
+async function loadResource(params) {
+  params = params || {};
+  var raw = params.link || params.url || params.id || "";
+  if (!raw && params.item) raw = params.item.link || params.item.id || "";
+  raw = String(raw || "");
+  try {
+    var tok = parseLineToken(raw);
+    if (tok) return [resourceOf(tok)];
+    if (raw.indexOf("_content/") > -1) {
+      var durl = absUrl(raw);
+      var asm = await assembleLines(durl);
+      if (!asm) return [];
+      var out = [];
+      for (var li = 0; li < asm.lines.length; li++) {
+        var ln = asm.lines[li];
+        var multi = ln.parts.length > 1;
+        for (var pi = 0; pi < ln.parts.length; pi++) {
+          out.push(resourceOf({
+            kind: ln.kind, name: ln.name, part: ln.parts[pi].part, multi: multi,
+            embed: ln.parts[pi].embed, ref: durl
+          }));
+        }
+      }
+      return out;
+    }
+    return [];
+  } catch (e) {
+    return [];
   }
 }

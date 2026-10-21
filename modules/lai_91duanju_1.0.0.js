@@ -1,6 +1,18 @@
-// 91成人短剧 for REX (lai_91duanju v1.0.0)
+// 91成人短剧 for REX (lai_91duanju v1.1.0)
 // 移植自 mira-cat 蜘蛛 91duanju.js（只读蓝图，逻辑等价移植）。
-// 后端：91crdj.com（HTML 页面解析，会 301 到镜像域名，靠请求跟随重定向）。
+// 后端：91crdj.com（HTML 页面解析；现行镜像 91crdjai.com）。
+// v1.1.0（真机反馈修复）：
+//   ① 页面请求改「镜像直连优先、入口域名兜底」：原版每次请求先撞 91crdj.com 的 301
+//      再跳镜像，真机上加载不出更多内容（VM harness 里翻页逻辑本身无误、逐分类实测出卡）。
+//      现在直连当前镜像 91crdjai.com，失败自动回退入口域名，镜像再轮换也能自愈。
+//   ② 播放加「代理线」：清单域 yd-hls.hzjvlo.cn 与分片域 tp*.drleao.cn 的 TLS 配置
+//      经 SSL Labs 实测为 A 级（含国内解析到的全部边缘 IP、TLS 1.2/1.3、证书链完整），
+//      真机却报 TLS 安全连接失败——属设备侧链路对这两个小众域名的干扰（与同日
+//      rou.video 被拦同类）。解法照 rou 先例：手机侧用 Widget.http 取清单正文，
+//      把分片/密钥地址改写为 dj-hls Worker 的 /s 中转（CF 出口实测可达 tp* 分片/密钥；
+//      清单域封 CF 出口、公共中转也拉不动，所以清单必须手机侧取），清单经 Worker /up
+//      暂存后播放器从 workers.dev 取（TLS 干净）。Worker 未部署、运行时无 POST 或
+//      取清单失败时，自动只回直连线（与 v1.0.0 行为一致，无回归）。
 // 封面为 AES-128-CBC 加密存储，走用户已部署的 bagua-img-proxy Worker 解密出图。
 // 短剧为多集结构：loadDetail 返回分集（episodeItems/childItems），
 // 播放由 stream 模块 loadResource 实时抓集页面解析 m3u8（蜘蛛 play 逻辑）。
@@ -10,7 +22,7 @@ WidgetMetadata = {
   title: "91成人短剧",
   description: "91成人短剧（91crdj.com）：成人短剧/漫剧/真人剧/视频/漫画/小说，多集短剧实时解析播放",
   author: "lai",
-  version: "1.0.0",
+  version: "1.1.0",
   requiredVersion: "0.0.1",
   site: "https://91crdj.com",
   detailCacheDuration: 180,
@@ -38,10 +50,16 @@ WidgetMetadata = {
   }
 };
 
-var HOST = "https://91crdj.com";
+// 页面主机：镜像优先（免 301 一跳），入口兜底（镜像轮换时自愈）。
+// fetchText 成功后把 BASE 记成实际可用的那个，后续站内链接统一拼 BASE。
+var HOSTS = ["https://91crdjai.com", "https://91crdj.com"];
+var BASE = HOSTS[0];
 var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 // 封面解密 Worker（用户已部署，与蜘蛛同一地址）
 var IMG_PROXY = "https://bagua-img-proxy.li768435813.workers.dev";
+// 播放代理 Worker（用户部署 dj-hls 后生效；未部署时模块探活失败、自动只回直连线）
+var DJ_WORKER = "https://dj-hls.li768435813.workers.dev";
+var djProbe = -1; // -1 未探，0 不可用，1 可用（会话内缓存，避免每次播放都探）
 
 function t(v) { return String(v == null ? "" : v).trim(); }
 
@@ -56,15 +74,54 @@ function pageHeaders(referer) {
     "User-Agent": UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9",
-    "Referer": referer || HOST + "/"
+    "Referer": referer || BASE + "/"
   };
 }
 
+function stripHost(u) {
+  var s = String(u || "");
+  for (var i = 0; i < HOSTS.length; i++) {
+    if (s.indexOf(HOSTS[i]) === 0) return s.slice(HOSTS[i].length);
+  }
+  return s;
+}
+
+// 站内地址统一拼到 BASE；外站绝对地址原样返回
+function absOnBase(pathOrUrl) {
+  var s = String(pathOrUrl || "");
+  if (s.indexOf("//") === 0) return "https:" + s;
+  if (s.indexOf("http") === 0) {
+    var rest = stripHost(s);
+    if (rest !== s) return BASE + rest; // 是站内某个主机名 → 改写到 BASE
+    return s;
+  }
+  return BASE + (s.charAt(0) === "/" ? s : "/" + s);
+}
+
+// 带主机兜底的页面抓取：先试 BASE，失败依次试其它主机；谁成功就把 BASE 切到谁。
+// 入口域名返回的是 301 跳镜像，Widget.http 跟随跳转后 res 里是镜像正文，同样算成功。
 async function fetchText(url, referer) {
-  var res = await Widget.http.get(url, { headers: pageHeaders(referer) });
-  var body = res && res.data != null ? String(res.data) : "";
-  if (!body) throw new Error("空回应");
-  return body;
+  var path = stripHost(String(url || ""));
+  if (path.indexOf("http") === 0) {
+    // 外站绝对地址（不该出现）：直拉一次
+    var r0 = await Widget.http.get(path, { headers: pageHeaders(referer) });
+    var b0 = r0 && r0.data != null ? String(r0.data) : "";
+    if (!b0) throw new Error("空回应");
+    return b0;
+  }
+  var order = [BASE].concat(HOSTS.filter(function (h) { return h !== BASE; }));
+  var lastErr = null;
+  for (var i = 0; i < order.length; i++) {
+    var host = order[i];
+    try {
+      var res = await Widget.http.get(host + path, { headers: pageHeaders(referer ? absOnBase(referer) : host + "/") });
+      var body = res && res.data != null ? String(res.data) : "";
+      if (!body) throw new Error("空回应");
+      BASE = host;
+      return body;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("请求失败");
 }
 
 function isVideoFormat(url) {
@@ -72,7 +129,7 @@ function isVideoFormat(url) {
   return [".m3u8", ".mp4", ".flv", ".ts"].some(function (k) { return low.indexOf(k) >= 0; });
 }
 
-// 与蜘蛛 parseList 相同的卡片解析（class 含 card 的 <a>）
+// 与蜘蛛 parseList 相同的卡片解析（class 含 card 的 <a>），链接拼当前 BASE
 function parseCards(html) {
   var items = [];
   if (!html) return items;
@@ -86,7 +143,7 @@ function parseCards(html) {
     if (!hm) continue;
     var href = t(hm[1]);
     var p = href;
-    try { p = new URL(href, HOST).pathname; } catch (e) {}
+    try { p = new URL(href, BASE).pathname; } catch (e) {}
     var seg = p.split("/").filter(Boolean);
     if (seg.length < 2) continue;
     var vid = seg[1];
@@ -117,14 +174,14 @@ function parseCards(html) {
     var low = cover.toLowerCase();
     if (["data:", "load.gif", "loading.gif", "placeholder"].some(function (b) { return low.indexOf(b) >= 0; })) cover = "";
     if (cover.indexOf("//") === 0) cover = "https:" + cover;
-    else if (cover.charAt(0) === "/") cover = HOST + cover;
+    else if (cover.charAt(0) === "/") cover = BASE + cover;
 
     var remarks = "";
     var rm = block.match(/<span[^>]*class="[^"]*(?:badge|eps-flag)[^"]*"[^>]*>([\s\S]*?)<\/span>/);
     if (rm) remarks = t(rm[1].replace(/<[^>]+>/g, ""));
 
     seen[vid] = 1;
-    var link = HOST + p;
+    var link = BASE + p;
     var pic = proxyCover(cover);
     items.push({
       id: link,
@@ -145,14 +202,14 @@ async function loadList(params) {
   params = params || {};
   var cat = String(params.cat || params.path || "duanju").replace(/^\/+/, "").replace(/\/+$/, "");
   var page = parseInt(params.page, 10) || 1;
-  var url = page > 1 ? HOST + "/" + cat + "/page/" + page + "/" : HOST + "/" + cat + "/";
+  var path = page > 1 ? "/" + cat + "/page/" + page + "/" : "/" + cat + "/";
   try {
-    var html = await fetchText(url, HOST + "/");
+    var html = await fetchText(path, BASE + "/");
     var list = parseCards(html);
     return list.length ? list : [{ id: "empty", type: "url", title: "没有找到相关内容" }];
   } catch (e) {
     var msg = String((e && e.message) || e);
-    return [{ id: "err", type: "url", title: "载入失败: " + msg.slice(0, 50), description: msg + " | URL: " + url }];
+    return [{ id: "err", type: "url", title: "载入失败: " + msg.slice(0, 50), description: msg + " | URL: " + BASE + path }];
   }
 }
 
@@ -171,10 +228,10 @@ async function search(params) {
   var wd = pickKeyword(params);
   var page = parseInt(params.page, 10) || 1;
   if (!wd) return [{ id: "tip", type: "url", title: "输入关键词后搜索" }];
-  var url = HOST + "/search/?q=" + encodeURIComponent(wd);
-  if (page > 1) url += "&page=" + page;
+  var path = "/search/?q=" + encodeURIComponent(wd);
+  if (page > 1) path += "&page=" + page;
   try {
-    var html = await fetchText(url, HOST + "/");
+    var html = await fetchText(path, BASE + "/");
     var list = parseCards(html);
     return list.length ? list : [{ id: "empty", type: "url", title: "没有找到相关内容" }];
   } catch (e) {
@@ -194,7 +251,7 @@ function extractEpisodes(html, pagePath) {
     var href = t(em[1]);
     var epNo = t(em[2]);
     if (basePath && href.indexOf(basePath) >= 0) {
-      if (href.charAt(0) === "/") href = HOST + href;
+      if (href.charAt(0) === "/") href = BASE + href;
       if (seen[href]) continue;
       seen[href] = 1;
       playUrls.push({ name: "第" + epNo + "集", url: href });
@@ -204,7 +261,7 @@ function extractEpisodes(html, pagePath) {
     var pmRe = /href=["']([^"']*(?:\/play\/|-\d+-\d+\.html)[^"']*)["']/g;
     while ((em = pmRe.exec(html))) {
       var h2 = t(em[1]);
-      if (h2.charAt(0) === "/") h2 = HOST + h2;
+      if (h2.charAt(0) === "/") h2 = BASE + h2;
       else if (h2.indexOf("http") !== 0) continue;
       if (seen[h2]) continue;
       seen[h2] = 1;
@@ -220,12 +277,17 @@ function extractEpisodes(html, pagePath) {
 }
 
 async function loadDetail(link) {
-  var url = String(link || "");
-  if (url.indexOf("http") !== 0) url = HOST + (url.charAt(0) === "/" ? url : "/" + url);
+  var url = absOnBase(String(link || ""));
+  if (!url) {
+    return { id: String(link || "err"), type: "url", title: "参数错误", description: "链接为空" };
+  }
   var pagePath = url;
   try { pagePath = new URL(url).pathname; } catch (e) {}
   try {
-    var html = await fetchText(url, HOST + "/");
+    var html = await fetchText(url, BASE + "/");
+    // fetchText 可能刚切换过 BASE，详情自身地址同步到 BASE 口径
+    url = absOnBase(url);
+    try { pagePath = new URL(url).pathname; } catch (e) {}
 
     var title = "";
     var tm = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/);
@@ -246,7 +308,7 @@ async function loadDetail(link) {
       if (pm2) pic = t(pm2[1]);
     }
     if (pic.indexOf("//") === 0) pic = "https:" + pic;
-    else if (pic.charAt(0) === "/") pic = HOST + pic;
+    else if (pic.charAt(0) === "/") pic = BASE + pic;
 
     var intro = "";
     var pats = [
@@ -323,13 +385,13 @@ function extractStreamFromPage(html) {
   }
   if (m3u8Url) {
     if (m3u8Url.indexOf("//") === 0) m3u8Url = "https:" + m3u8Url;
-    else if (m3u8Url.charAt(0) === "/") m3u8Url = HOST + m3u8Url;
+    else if (m3u8Url.charAt(0) === "/") m3u8Url = BASE + m3u8Url;
   }
   return m3u8Url;
 }
 
 async function resolvePlayFromPage(pageUrl) {
-  var html = await fetchText(pageUrl, HOST + "/");
+  var html = await fetchText(pageUrl, BASE + "/");
   var direct = extractStreamFromPage(html);
   if (direct) return direct;
   // 详情页本身没播放器时，跟进第一条分集链接（单集作品）
@@ -343,6 +405,64 @@ async function resolvePlayFromPage(pageUrl) {
   return "";
 }
 
+// ---------- 播放代理线（dj-hls Worker） ----------
+
+// 探活：根路径应回 "dj-hls ok"。探一次缓存结果，避免每次播放都探。
+async function probeDjWorker() {
+  if (djProbe >= 0) return djProbe === 1;
+  djProbe = 0;
+  try {
+    var res = await Widget.http.get(DJ_WORKER + "/", { headers: { "User-Agent": UA } });
+    var body = res && res.data != null ? String(res.data) : "";
+    if (body.indexOf("dj-hls ok") === 0) djProbe = 1;
+  } catch (e) {}
+  return djProbe === 1;
+}
+
+// 把清单里的分片/密钥绝对地址改写为 Worker /s 中转；相对地址先按清单地址拼全
+function rewritePlaylist(text, playlistUrl) {
+  var lines = String(text || "").split("\n");
+  var out = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var tr = line.trim();
+    if (!tr) { out.push(line); continue; }
+    if (tr.charAt(0) === "#") {
+      out.push(line.replace(/URI="([^"]+)"/g, function (mm, u) {
+        var abs = u;
+        try { abs = new URL(u, playlistUrl).href; } catch (e) {}
+        return 'URI="' + DJ_WORKER + "/s?u=" + encodeURIComponent(abs) + '"';
+      }));
+      continue;
+    }
+    var abs2 = tr;
+    try { abs2 = new URL(tr, playlistUrl).href; } catch (e) {}
+    out.push(DJ_WORKER + "/s?u=" + encodeURIComponent(abs2));
+  }
+  return out.join("\n");
+}
+
+// 构建代理线：手机侧取清单 → 改写 → POST /up 暂存 → 回播放器用的 /p 地址。任一步失败回 ""。
+async function buildRelayLine(playlistUrl, referer) {
+  try {
+    if (!Widget.http.post) return "";
+    if (!(await probeDjWorker())) return "";
+    var res = await Widget.http.get(playlistUrl, { headers: { "User-Agent": UA, "Referer": referer || BASE + "/" } });
+    var body = res && res.data != null ? String(res.data) : "";
+    if (body.indexOf("#EXTM3U") !== 0) return "";
+    var rewritten = rewritePlaylist(body, playlistUrl);
+    var up = await Widget.http.post(DJ_WORKER + "/up", rewritten, { headers: { "Content-Type": "text/plain; charset=utf-8", "User-Agent": UA } });
+    var upBody = up && up.data != null ? String(up.data) : "";
+    var parsed = null;
+    try { parsed = JSON.parse(upBody); } catch (e) {}
+    var relay = parsed && parsed.url ? String(parsed.url) : "";
+    if (relay.indexOf(DJ_WORKER + "/p/") !== 0) return "";
+    return relay;
+  } catch (e) {
+    return "";
+  }
+}
+
 async function loadResource(params) {
   params = params || {};
   var raw = String(params.link || params.url || params.id || "");
@@ -350,11 +470,18 @@ async function loadResource(params) {
   if (!raw) return [];
   try {
     if (isVideoFormat(raw)) {
-      return [{ name: "播放", url: raw, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": HOST + "/" } }];
+      return [{ name: "播放", url: raw, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": BASE + "/" } }];
     }
     var url = await resolvePlayFromPage(raw);
     if (!url) return [];
-    return [{ name: "播放", url: url, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": raw } }];
+    var lines = [];
+    // 代理线排前（真机 TLS 报错的正解）；构建失败自动跳过，只回直连线
+    var relay = await buildRelayLine(url, raw);
+    if (relay) {
+      lines.push({ name: "代理", url: relay, playerType: "app", customHeaders: { "User-Agent": UA } });
+    }
+    lines.push({ name: relay ? "直连" : "播放", url: url, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": raw } });
+    return lines;
   } catch (e) {
     return [];
   }

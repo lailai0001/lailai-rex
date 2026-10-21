@@ -2,8 +2,10 @@
 // 移植自 mira-cat 蜘蛛 avhub.js (定版方案), 后端: https://avhub360.com (服务端渲染, 无反爬)。
 // 列表: /new、/popular 与 /tags/{id}、/theme/detail/{id} 的分页规则与蜘蛛一致;
 //   卡片为 <a href="/videos/{code}" data-mv-id> + 懒加载封面 (data-src 优先)。
-// 封面: image.cpckgr.cn 上的图是 AES 加密图, 蜘蛛定版方案 = 换镜像域名
-//   pic.jtzatly.cn 后走用户自建 bagua-img-proxy Worker 出图, 本模块原样沿用。
+// 封面: image.cpckgr.cn 上的图是 AES 加密图, 走用户自建 bagua-img-proxy Worker
+//   解密出图。原方案先换镜像域名 pic.jtzatly.cn 再走代理, 但该镜像域已整体
+//   不可达 (2026-10-21 复核: 直连 000、经代理 502); image.cpckgr.cn 本身已在
+//   Worker 白名单内, 改为原域地址直走代理出图 (实测 200 image/jpeg 真图)。
 // 详情: 标题 og:title; 真封面取页面 JSON 的 videoCover (og:image 是统一占位图)。
 // 播放: REX 没有蜘蛛的本地 /proxy/m3u8, 改为在 loadDetail 内当场解析
 //   GET /media/{code}: 最多重抽 5 次 (蜘蛛定版逻辑) ——
@@ -169,14 +171,14 @@ async function httpRaw(url, headers) {
   }
 }
 
-// 封面出图 (蜘蛛定版): cpckgr 加密图换镜像域名 pic.jtzatly.cn 再走 bagua-img-proxy
+// 封面出图: cpckgr 加密图原域直走 bagua-img-proxy 解密 (旧方案的镜像域名
+// pic.jtzatly.cn 已不可达, 不再换域名; 原域已在 Worker 白名单内)
 function picProxy(pic) {
   pic = t(pic);
   if (!pic) return pic;
   if (/workers\.dev/i.test(pic)) return pic;
   if (!/cpckgr\.cn/i.test(pic)) return pic;
-  var swapped = pic.replace(/^[a-z]+:\/\/[^/]*cpckgr\.cn/i, "https://pic.jtzatly.cn");
-  return IMG_PROXY + encodeURIComponent(swapped);
+  return IMG_PROXY + encodeURIComponent(pic);
 }
 
 // ---------- 列表解析 (蜘蛛同构: 正则卡片) ----------

@@ -5,8 +5,10 @@
 // 每字节减 k 再 JSON.parse 得 videoUrl（decodeEv 算法与蜘蛛一致）。
 // 注意：站方播放清单与分片均为 PNG 包装（内嵌 roUd chunk 载荷），站方靠自家
 // Shaka 播放器的响应过滤器在客户端解包；普通播放器拿到的是 PNG 图片。
-// 播放经 rou-hls Worker 拆包（PNG 伪装 HLS 服务端还原）：先在手机侧解析 /api/hls 的 302
-// 拿到 CDN 清单地址（rou.video 拦 Workers 出口、清单/分片不拦），解析不到才交 Worker 兜底链。
+// 播放经 rou-hls Worker 服务端拆包：rou.video 的 /api 一跳拦 Workers 出口，
+// 但官方镜像 rouvb1.xyz（地址发布页 rou.pub/dizhi 所列、同后端同 id 空间）不拦——
+// 模块把 api 地址换成镜像域名交给 Worker，Worker 直连取清单拆包（2026-10-21 晚实测全链通）。
+// 旧版"手机侧读 302 Location"的路已删：REX 运行时自动跟随跳转且不暴露 Location/最终 URL，真机证伪。
 
 WidgetMetadata = {
   id: "lai_rou",
@@ -223,28 +225,15 @@ function extractEv(html) {
 }
 
 var ROU_WORKER = "https://rou-hls.li768435813.workers.dev";
-// 把 /api/hls/<id> 换成 rou-hls Worker 的 /v 地址。先尝试在手机侧解析 302：
-// rou.video 对 Workers 出口回 403，但手机出口可达；若运行时暴露了 Location/最终 URL，
-// 就把 CDN 的 index.png 清单地址交给 Worker 直连拆包（已实测通）；
-// 拿不到就把 api 地址交给 Worker 的兜底中转链。
-async function rouWorkerUrl(apiUrl, pageUrl) {
-  var resolved = "";
-  try {
-    var res = await Widget.http.get(apiUrl, { headers: playHeaders() });
-    var cands = [];
-    if (res) {
-      var h = res.headers || res.header || {};
-      cands.push(h.location, h.Location);
-      cands.push(res.finalUrl, res.responseUrl, res.url, res.requestURL);
-      if (res.request) cands.push(res.request.responseURL, res.request.url);
-    }
-    for (var i = 0; i < cands.length; i++) {
-      var c = cands[i];
-      if (typeof c === "string" && c.indexOf("index.png") > -1) { resolved = c; break; }
-    }
-  } catch (_) {}
-  var target = resolved || apiUrl;
-  return ROU_WORKER + "/v?u=" + encodeURIComponent(target) + "&ref=" + encodeURIComponent(pageUrl);
+// 官方镜像域名（地址发布页 rou.pub/dizhi 所列）：与 rou.video 同后端同 id 空间，
+// 其 /api 一跳不拦 rou-hls Worker 的出口（rou.video 本域会拦，2026-10-21 实测坐实）。
+// 镜像若轮换：改这一处为发布页上的新域名即可（Worker v3 起也会自动互换主站/镜像兜底）。
+var API_MIRROR_HOST = "rouvb1.xyz";
+// 把解出的 /api/hls/<id> 换成镜像域名后交给 rou-hls Worker 的 /v：
+// Worker 直连镜像 api（跟随 302）取清单 PNG 拆包成普通 m3u8，分片改写回 Worker /s 逐个拆包。
+function rouWorkerUrl(apiUrl, pageUrl) {
+  var u = String(apiUrl || "").replace(/^(https?:\/\/)rou\.video(?=\/)/i, "$1" + API_MIRROR_HOST);
+  return ROU_WORKER + "/v?u=" + encodeURIComponent(u) + "&ref=" + encodeURIComponent(pageUrl);
 }
 
 async function loadDetail(link) {
@@ -274,8 +263,10 @@ async function loadDetail(link) {
     }
     // 与蜘蛛 play() 兼容兜底一致：旧版 videoUrl 是封面 jpg 时替换为 .m3u8
     videoUrl = absUrl(String(videoUrl).replace(".jpg", ".m3u8"));
-    // PNG 伪装 HLS：交给 rou-hls Worker 拆包成普通 HLS 再播
-    videoUrl = await rouWorkerUrl(videoUrl, url);
+    // PNG 伪装 HLS 的 /api/hls 地址经 rou-hls Worker 拆包成普通 HLS；其他形态保持直链
+    if (videoUrl.indexOf("/api/hls/") > -1) {
+      videoUrl = rouWorkerUrl(videoUrl, url);
+    }
     return {
       id: url,
       type: "detail",
