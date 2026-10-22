@@ -587,6 +587,15 @@
       "version": "1.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/main/modules/lai_bestjavporn_1.0.1.js"
+    },
+    {
+      "id": "lai_subtitleagg",
+      "title": "字幕聚合",
+      "description": "",
+      "requiredVersion": "0.0.1",
+      "version": "1.0.0",
+      "author": "",
+      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_subtitleagg_1.0.0.js"
     }
   ]
 }
