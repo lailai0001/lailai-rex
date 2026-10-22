@@ -152,9 +152,9 @@
       "title": "JAVSB",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "3.0.0",
+      "version": "3.0.1",
       "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/main/modules/lai_javsb_3.0.0.js"
+      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/main/modules/lai_javsb_3.0.1.js"
     },
     {
       "id": "lai_avhub",
