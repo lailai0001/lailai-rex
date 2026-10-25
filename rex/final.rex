@@ -305,9 +305,9 @@
       "title": "51吃瓜",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_chigua51_1.0.0.js"
+      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_chigua51_1.0.1.js"
     },
     {
       "id": "lai_chigua57",
@@ -398,15 +398,6 @@
       "version": "1.0.0",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_mrds_1.0.0.js"
-    },
-    {
-      "id": "lai_qiezi",
-      "title": "茄子精品",
-      "description": "",
-      "requiredVersion": "0.0.1",
-      "version": "1.0.0",
-      "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_qiezi_1.0.0.js"
     },
     {
       "id": "lai_jilimao",
