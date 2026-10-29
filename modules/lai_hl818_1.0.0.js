@@ -12,7 +12,7 @@ WidgetMetadata = {
   title: "818黑料网",
   description: "818黑料网（cell.lacdfsq.cc）：今日吃瓜/热门大瓜/每日大赛/反差网黄等分类，封面走解密代理，播放为签名 m3u8 实时解析",
   author: "lai",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
   site: "https://cell.lacdfsq.cc",
   detailCacheDuration: 180,
@@ -41,9 +41,10 @@ WidgetMetadata = {
   }
 };
 
-var BASE = "https://cell.lacdfsq.cc";
+var BASE = "https://818hlw1.com";
 var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 var IMG_PROXY = "https://bagua-img-proxy.li768435813.workers.dev/img?url=";
+var IMG_PROXY_51 = "https://51chigua.li768435813.workers.dev/img?url=";
 
 function pageHeaders() {
   return {
@@ -83,12 +84,14 @@ function absUrl(u) {
   return BASE + (s.charAt(0) === "/" ? s : "/" + s);
 }
 
-// 封面为 AES 加密存储，与蜘蛛 proxyCover 一致：统一走解密代理出图
+// 封面按域路由（与 mira-cat 蜘蛛同款）：pic.*.cn 图床走 51chigua 解密，其余走 bagua
 function proxyCover(url) {
   var s = String(url || "").trim();
   if (!s) return "";
   if (s.indexOf("data:") === 0) return s;
   if (s.indexOf("bagua-img-proxy") >= 0) return s;
+  if (s.indexOf("51chigua") >= 0) return s;
+  if (/\/\/pic\.[^/]*\.cn\//i.test(s)) return IMG_PROXY_51 + encodeURIComponent(s);
   return IMG_PROXY + encodeURIComponent(s);
 }
 

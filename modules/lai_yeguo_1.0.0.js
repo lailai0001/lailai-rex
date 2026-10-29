@@ -14,7 +14,7 @@ WidgetMetadata = {
   title: "野果短剧",
   description: "野果短剧：首页推荐/排行榜/原创/真人/漫剧等 10 个分类，多集短剧，播放实时解析",
   author: "lai",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
   site: "https://yeguodj.com",
   detailCacheDuration: 180,
@@ -133,6 +133,7 @@ var API_BASE = "https://www.yeguodj.com/api.php";
 var SITE = "https://yeguodj.com";
 var COVER_PROXY = "https://huangguo.wulii.de5.net";
 var IMG_WORKER = "https://bagua-img-proxy.li768435813.workers.dev";
+var IMG_PROXY_51 = "https://51chigua.li768435813.workers.dev";
 var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 var API_KEY = "2acf7e91e9864673";
 var API_IV = "1c29882d3ddfcfd6";
@@ -368,6 +369,9 @@ function proxiedCover(url) {
   }
   if (/pic\.wlwvch\.cn|pic\.zdmhyg\.cn|pic\.wirqed\.cn|imgpublic\.ycomesc\.live/i.test(url)) {
     return COVER_PROXY + "/?url=" + encodeURIComponent(url);
+  }
+  if (/^https?:\/\/pic\.nihmcl\.cn\//i.test(url)) {
+    return IMG_PROXY_51 + "/img?url=" + encodeURIComponent(url);
   }
   return url;
 }

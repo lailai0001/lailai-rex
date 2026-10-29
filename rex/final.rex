@@ -274,15 +274,6 @@
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_uu_video_1.0.0.js"
     },
     {
-      "id": "lai_xhongyan",
-      "title": "X红颜",
-      "description": "",
-      "requiredVersion": "0.0.1",
-      "version": "1.0.0",
-      "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_xhongyan_1.0.0.js"
-    },
-    {
       "id": "lai_youzidj",
       "title": "柚子短剧",
       "description": "",
@@ -296,7 +287,7 @@
       "title": "91成人短剧",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "2.0.0",
+      "version": "2.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_91duanju_1.0.0.js"
     },
@@ -305,7 +296,7 @@
       "title": "51吃瓜",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_chigua51_1.0.1.js"
     },
@@ -323,7 +314,7 @@
       "title": "八卦",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_bagua_1.0.0.js"
     },
@@ -337,13 +328,13 @@
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_porncgw_1.0.0.js"
     },
     {
-      "id": "lai_hanbj",
-      "title": "韩国BJ",
+      "id": "lai_koreanbj",
+      "title": "Korean BJ",
       "description": "",
       "requiredVersion": "0.0.1",
       "version": "1.0.0",
       "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_hanbj_1.0.0.js"
+      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_koreanbj_1.0.0.js"
     },
     {
       "id": "lai_huangdou",
@@ -359,7 +350,7 @@
       "title": "黄果短剧",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_huangguo_1.0.0.js"
     },
@@ -395,7 +386,7 @@
       "title": "每日大赛",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_mrds_1.0.0.js"
     },
@@ -449,7 +440,7 @@
       "title": "818黑料网",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_hl818_1.0.0.js"
     },
@@ -557,7 +548,7 @@
       "title": "野果短剧",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_yeguo_1.0.0.js"
     },
@@ -587,6 +578,15 @@
       "version": "1.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_subtitleagg_1.0.1.js"
+    },
+    {
+      "id": "lai_javneon",
+      "title": "JavNeon",
+      "description": "",
+      "requiredVersion": "0.0.1",
+      "version": "1.0.0",
+      "author": "",
+      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_javneon_1.0.0.js"
     }
   ]
 }

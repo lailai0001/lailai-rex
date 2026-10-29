@@ -9,7 +9,7 @@ WidgetMetadata = {
   title: "黄果短剧",
   description: "黄果短剧：AI成人短剧、AI漫剧、AI换脸、AI魔改、排行榜，多集短剧",
   author: "lai",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
   site: "https://huangguoai.com",
   detailCacheDuration: 180,
@@ -92,6 +92,7 @@ var HG_HOST = "https://huangguoai.com";
 var HG_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 // 封面代理解密（与蜘蛛 COVER_PROXY 一致，外部已部署）
 var HG_COVER_PROXY = "https://huangguo.wulii.de5.net";
+var HG_RELAY = "https://javsb-relay-production.up.railway.app";
 var HG_PLAY_HEADERS = { "User-Agent": HG_UA, "Referer": HG_HOST + "/" };
 
 function hgHeaders(referer) {
@@ -497,6 +498,10 @@ async function loadResource(params) {
     if (ref.kind === "episode") {
       var one = await hgEpisodePlay(ref.pageUrl, ref.ep);
       if (!one) return [];
+      if (/\.m3u8/i.test(one)) {
+        return [{ name: "中转", url: HG_RELAY + "/hls?url=" + encodeURIComponent(one), playerType: "app", customHeaders: { "User-Agent": HG_UA } },
+          { name: "直连", url: one, playerType: "app", customHeaders: HG_PLAY_HEADERS }];
+      }
       return [{ name: "播放", url: one, playerType: "app", customHeaders: HG_PLAY_HEADERS }];
     }
     if (!ref.id) return [];
@@ -515,7 +520,9 @@ async function loadResource(params) {
         continue;
       }
       misses = 0;
-      out.push({ name: eps[i].name, description: head.title || "", url: url, playerType: "app", customHeaders: HG_PLAY_HEADERS });
+      var playUrl = /\.m3u8/i.test(url) ? HG_RELAY + "/hls?url=" + encodeURIComponent(url) : url;
+      var playHeaders = /\.m3u8/i.test(url) ? { "User-Agent": HG_UA } : HG_PLAY_HEADERS;
+      out.push({ name: eps[i].name, description: head.title || "", url: playUrl, playerType: "app", customHeaders: playHeaders });
     }
     return out;
   } catch (e) {

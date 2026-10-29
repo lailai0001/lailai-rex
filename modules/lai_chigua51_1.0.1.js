@@ -12,7 +12,7 @@ WidgetMetadata = {
   title: "51吃瓜",
   description: "51吃瓜（多镜像）：今日吃瓜/热门大瓜/51剧场/AI成人短剧/国产视频等 27 个分类",
   author: "lai",
-  version: "1.0.1",
+  version: "1.0.2",
   requiredVersion: "0.0.1",
   site: "https://bus.egyjtzsa.cc",
   detailCacheDuration: 180,
@@ -161,8 +161,12 @@ function parseCards(html) {
     seen[vid] = 1;
 
     var pic = "";
-    var pm = b.match(/loadBannerDirect\('([^']+)'/);
-    if (pm) pic = pm[1];
+    var zm = b.match(/z-bg-loader-url=["']([^"']+)["']/);
+    if (zm) pic = zm[1];
+    if (!pic) {
+      var pm = b.match(/loadBannerDirect\('([^']+)'/);
+      if (pm) pic = pm[1];
+    }
     if (!pic) {
       var im = b.match(/<img[^>]+src="([^"]+)"/);
       if (im) pic = absUrl(im[1]);

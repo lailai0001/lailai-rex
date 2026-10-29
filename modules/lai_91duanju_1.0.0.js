@@ -35,7 +35,7 @@ WidgetMetadata = {
   title: "91成人短剧",
   description: "91成人短剧（91crdj.com）：成人短剧/漫剧/真人剧/视频/漫画/小说，多集短剧实时解析播放",
   author: "lai",
-  version: "2.0.0",
+  version: "2.0.1",
   requiredVersion: "0.0.1",
   site: "https://91crdj.com",
   detailCacheDuration: 180,
@@ -71,6 +71,7 @@ var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605
 var IMG_PROXY = "https://bagua-img-proxy.li768435813.workers.dev";
 // 播放代理 Worker（用户已部署 dj-hls：/up 暂存清单、/p 取清单、/s 代拉分片密钥）
 var DJ_WORKER = "https://dj-hls.li768435813.workers.dev";
+var RELAY = "https://javsb-relay-production.up.railway.app";
 var djProbe = -1; // -1 未探，0 不可用，1 可用（会话内缓存）
 // 阅读类分类：无视频分集，详情只回信息
 var READ_CATS = { manhua: 1, xiaoshuo: 1 };
@@ -684,15 +685,14 @@ async function loadResource(params) {
     if (!src) return [];
     var referer = absUrl(raw);
     var lines = [];
-    var relay = await buildRelayLine(src, referer);
-    if (relay.url) {
-      lines.push({ name: "代理", url: relay.url, playerType: "app", customHeaders: { "User-Agent": UA } });
+    if (/\.m3u8/i.test(src)) {
+      lines.push({ name: "中转", url: RELAY + "/hls?url=" + encodeURIComponent(src), playerType: "app", customHeaders: { "User-Agent": UA } });
     }
     if (src.indexOf("https://") === 0) {
       lines.push({ name: "明文", url: "http://" + src.slice(8), playerType: "app", customHeaders: { "User-Agent": UA, "Referer": referer } });
     }
     lines.push({
-      name: relay.url ? "直连" : ("直连(代理失败:" + (relay.fail || "?") + ")"),
+      name: "直连",
       url: src,
       playerType: "app",
       customHeaders: { "User-Agent": UA, "Referer": referer }

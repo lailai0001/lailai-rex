@@ -9,7 +9,7 @@ WidgetMetadata = {
   title: "八卦",
   description: "八卦（mrds66.com）：每日大赛/热搜吃瓜/网红黑料等 21 个分类，详情页直解 dplayer 播放地址",
   author: "lai",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
   site: "https://www.mrds66.com",
   detailCacheDuration: 180,
@@ -49,6 +49,7 @@ WidgetMetadata = {
 var BASE = "https://www.mrds66.com";
 var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
 var IMG_PROXY = "https://bagua-img-proxy.li768435813.workers.dev/img?url=";
+var IMG_PROXY_51 = "https://51chigua.li768435813.workers.dev/img?url=";
 
 function pageHeaders() {
   return {
@@ -112,13 +113,18 @@ function absUrl(url) {
   return BASE + "/" + url;
 }
 
-// 封面走已部署的 bagua-img-proxy 解密代理
+// 封面按域路由（与 mira-cat 蜘蛛同款）：pic.*.cn 图床走 51chigua 解密，其余走 bagua
 function proxyCover(url) {
   url = t(url);
   if (!url) return "";
   if (url.indexOf("data:") === 0) return url;
   if (url.indexOf("bagua-img-proxy") >= 0) return url;
-  return IMG_PROXY + encodeURIComponent(absUrl(url));
+  if (url.indexOf("51chigua") >= 0) return url;
+  var abs = absUrl(url);
+  var host = "";
+  try { host = abs.split("/")[2] || ""; } catch (e) {}
+  if (/^pic\.[^/]*\.cn$/i.test(host)) return IMG_PROXY_51 + encodeURIComponent(abs);
+  return IMG_PROXY + encodeURIComponent(abs);
 }
 
 function parseList(html) {
