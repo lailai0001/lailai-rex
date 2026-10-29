@@ -341,7 +341,7 @@
       "title": "黄豆短剧",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_huangdou_1.0.0.js"
     },

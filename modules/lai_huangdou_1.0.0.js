@@ -1,7 +1,7 @@
 // 黄豆短剧 for REX (lai_huangdou v1.0.0)
 // 蓝图：mira-cat 蜘蛛 huangdou.js（py_huangdou）。该文件是压缩残片（helper 定义不在仓库内），
 // 接口/分类/详情结构与同仓库 huangdou_rex.js（由 REX 原版 forward.huangdou v2.0.2 转制）逐项一致，
-// 本模块按该完整逻辑移植：后端经 Cloudflare Worker 反代 https://hd.wulii.de5.net（原站 tideember.cc）。
+// 本模块按该完整逻辑移植：后端经自有 Cloudflare Worker 反代 https://huangdou-proxy.li768435813.workers.dev（原站 tideember.cc）。
 // 列表/搜索/详情走 /list /search /detail /navBlock /navFilter JSON 接口；
 // 播放地址在点播时经 /play 实时换取（签名会过期），多集走 episodes + loadResource（stream）。
 
@@ -10,9 +10,9 @@ WidgetMetadata = {
   title: "黄豆短剧",
   description: "黄豆短剧：黄豆原创、魔改、擦边、真人等分类，多集短剧，播放实时解析",
   author: "lai",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
-  site: "https://hd.wulii.de5.net",
+  site: "https://huangdou-proxy.li768435813.workers.dev",
   detailCacheDuration: 180,
   modules: [
     {
@@ -116,7 +116,7 @@ WidgetMetadata = {
   }
 };
 
-var HD_BASE = "https://hd.wulii.de5.net";
+var HD_BASE = "https://huangdou-proxy.li768435813.workers.dev";
 var HD_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 var HD_PAGE_SIZE = 30;
 var HD_PLAY_HEADERS = {
