@@ -256,15 +256,6 @@
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_av123_1.0.0.js"
     },
     {
-      "id": "lai_uu",
-      "title": "UU直播破解",
-      "description": "",
-      "requiredVersion": "0.0.1",
-      "version": "1.0.0",
-      "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_uu_1.0.0.js"
-    },
-    {
       "id": "lai_uu_video",
       "title": "Uu视频",
       "description": "",
@@ -400,15 +391,6 @@
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_jilimao_1.0.0.js"
     },
     {
-      "id": "lai_bianfu",
-      "title": "蝙蝠视频",
-      "description": "",
-      "requiredVersion": "0.0.1",
-      "version": "1.0.0",
-      "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_bianfu_1.0.0.js"
-    },
-    {
       "id": "lai_rip17",
       "title": "17RIP",
       "description": "",
@@ -506,15 +488,6 @@
       "version": "1.0.0",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_spankbang_1.0.0.js"
-    },
-    {
-      "id": "lai_woxiu",
-      "title": "我秀直播",
-      "description": "",
-      "requiredVersion": "0.0.1",
-      "version": "1.0.0",
-      "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_woxiu_1.0.0.js"
     },
     {
       "id": "lai_xnxx",
