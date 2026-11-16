@@ -343,7 +343,7 @@ const WidgetMetadata = {
   title: "禁果短剧",
   description: "禁果短剧",
   author: "lailai",
-  version: "1.0.2",
+  version: "1.0.4",
   requiredVersion: "0.0.1",
   detailCacheDuration: 0,
   search: {
