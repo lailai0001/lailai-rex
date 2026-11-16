@@ -7,7 +7,7 @@
 WidgetMetadata = {
   id: "lai_jinguo",
   title: "禁果短剧",
-  version: "1.1.3",
+  version: "1.1.4",
   requiredVersion: "0.0.1",
   description: "禁果短剧：最新/热度/首页推荐/全部/原创/单体/动漫/影视/多集/单集/9 个题材，点播现取播放地址",
   author: "lai",
@@ -491,28 +491,27 @@ async function loadDetail(link) {
 
   var cover = __capyCoverOf(detail);
   var rawEps = detail.episodeItems || detail.childItems || [];
-  // 懒解析直通：不预取任何集地址，详情一次 API 调用即返回，不转圈。
-  // 点播时 App 调 loadResource 单集现取。
+  // 聚合短剧同款懒解析：只返扁平 episodes（{name,id,link}），不带 seasons /
+  // episodeItems / childItems / mediaType。App 拿扁平集列表渲染，点集调
+  // loadResource 单集现取。带 seasons 时 App 会从季里找 videoUrl，
+  // 无 videoUrl 即判“暂无可用资源”。
   var eps = [];
   for (var i = 0; i < rawEps.length; i++) {
     var raw = rawEps[i] || {};
-    eps.push({
-      id: raw.id || raw.link || "ep" + (i + 1),
-      name: raw.title || raw.name || "第" + (i + 1) + "集",
-      title: raw.title || raw.name || "第" + (i + 1) + "集",
-      episodeNumber: raw.episodeNumber || i + 1,
-      seasonNumber: raw.seasonNumber || 1,
-      link: raw.link || "",
-      posterUrl: cover,
-      backdropUrl: cover
-    });
+    var lk = raw.link || raw.id || "";
+    eps.push({ name: raw.title || raw.name || "第" + (i + 1) + "集", id: lk, link: lk });
   }
-  detail.type = "url";
-  detail.episodes = eps;
-  detail.episodeItems = eps;
-  detail.childItems = eps;
-  detail.seasons = eps.length
-    ? [{ title: "第1季", name: "第1季", seasonNumber: 1, episodes: eps }]
-    : [];
-  return detail;
+  return {
+    id: detail.id,
+    type: "url",
+    title: detail.title,
+    posterUrl: cover,
+    posterPath: cover,
+    coverUrl: cover,
+    backdropPath: cover,
+    description: detail.description || "",
+    remark: "共" + eps.length + "集",
+    episodes: eps,
+    link: detail.link || detail.id
+  };
 }
