@@ -7,7 +7,7 @@
 WidgetMetadata = {
   id: "lai_jinguo",
   title: "禁果短剧",
-  version: "1.1.2",
+  version: "1.1.3",
   requiredVersion: "0.0.1",
   description: "禁果短剧：最新/热度/首页推荐/全部/原创/单体/动漫/影视/多集/单集/9 个题材，点播现取播放地址",
   author: "lai",
@@ -53,8 +53,8 @@ WidgetMetadata = {
 
 var UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
-// jinguo-fetch Worker v2（已部署）：API 直通 + /batch-play 批量取集地址。
-// 设备直连 jinguoduanju.app 不稳时走 Worker；Worker 失败再回落直连。
+// jinguo-fetch Worker v2（已部署）：/api/v1 直通代理。/batch-play 已 403 弃用，
+// 本模块不再批量预取，详情只出集、点播时 loadResource 单集现取。
 var WORKER = "https://jinguo-fetch.li768435813.workers.dev";
 var _token = "";
 var _deviceId = "";
@@ -120,7 +120,6 @@ async function ensureToken(c) {
   };
   var res = null;
   var d = null;
-  // 先走 Worker 腿（/api/v1/auth/device 直通），失败再直连
   var authUrls = [WORKER + "/api/v1/auth/device", url];
   for (var ai = 0; ai < authUrls.length && (!d || !d.token); ai++) {
     try {
@@ -160,7 +159,6 @@ async function apiGet(c, path, query, retry) {
     Origin: c.apiBase,
     Authorization: "Bearer " + _token
   };
-  // Worker 腿优先，直连回落
   var urls = [WORKER + "/api/v1" + path + qs(query || {}), c.apiBase + "/api/v1" + path + qs(query || {})];
   var d = null;
   for (var ui = 0; ui < urls.length; ui++) {
@@ -170,7 +168,6 @@ async function apiGet(c, path, query, retry) {
       if (typeof d === "string") {
         try { d = JSON.parse(d); } catch (e) {}
       }
-      if (d && (d.status === 401 || d.statusCode === 401)) break;
       if (d) break;
     } catch (e) {}
   }
@@ -179,23 +176,6 @@ async function apiGet(c, path, query, retry) {
     return apiGet(c, path, query, true);
   }
   return d;
-}
-
-// 批量取全部集播放地址（Worker /batch-play，一次调用；失败返回空对象）
-async function batchPlay(c, episodeIds) {
-  if (!episodeIds || !episodeIds.length) return {};
-  await ensureToken(c);
-  var out = {};
-  try {
-    var res = await Widget.http.post(WORKER + "/batch-play", { token: _token, episodeIds: episodeIds }, { headers: { "Content-Type": "application/json", Accept: "application/json" } });
-    var d = res && res.data;
-    if (typeof d === "string") { try { d = JSON.parse(d); } catch (e) {} }
-    var results = (d && d.results) || [];
-    for (var i = 0; i < results.length; i++) {
-      if (results[i] && results[i].videoUrl) out[String(results[i].episodeId)] = results[i].videoUrl;
-    }
-  } catch (e) {}
-  return out;
 }
 
 function pageSlice(arr, page) {
@@ -359,55 +339,40 @@ async function loadDetailFwd(link) {
   var drama = (data && data.drama) || {};
   var eps = (data && data.episodes) || [];
   var cover = absUrl(c.apiBase, drama.coverUrl || "");
+  // 懒解析：集只给 name/id/link，不预取地址（聚合短剧同款已证能播）。
+  // 点播时 loadResource 单集现取 /play（走 Worker 直通）。
   var episodeItems = [];
-  var epIds = [];
   for (var i = 0; i < eps.length; i++) {
     var ep = eps[i];
     var n = ep.number || i + 1;
     var epLink = "jgdj:" + p.id + ":" + n + ":" + t(ep.id);
-    epIds.push(t(ep.id));
     episodeItems.push({
       id: epLink,
-      type: "url",
+      name: t(ep.title || "第" + n + "集"),
       title: t(ep.title || "第" + n + "集"),
+      type: "url",
       mediaType: "tv",
       seasonNumber: 1,
       episodeNumber: Number(n) || i + 1,
-      link: epLink,
-      videoUrl: "",
-      playerType: "system"
+      link: epLink
     });
   }
   if (!episodeItems.length) {
     episodeItems.push({
       id: "jgdj:" + p.id + ":1",
-      type: "url",
+      name: "第1集",
       title: "第1集",
+      type: "url",
       mediaType: "tv",
       seasonNumber: 1,
       episodeNumber: 1,
-      link: "jgdj:" + p.id + ":1",
-      videoUrl: "",
-      playerType: "system"
+      link: "jgdj:" + p.id + ":1"
     });
-  }
-  // 铁律：集必须带真 videoUrl。/batch-play 一次取全部集地址（Worker 端并行）。
-  var playMap = await batchPlay(c, epIds);
-  for (var pi = 0; pi < episodeItems.length; pi++) {
-    var u = playMap[epIds[pi]] || "";
-    if (u) {
-      episodeItems[pi].videoUrl = u;
-      episodeItems[pi].customHeaders = {
-        "User-Agent": UA,
-        Referer: c.apiBase + "/",
-        Origin: c.apiBase
-      };
-    }
   }
   var tags = Array.isArray(drama.tags) ? drama.tags.join(" · ") : "";
   return {
     id: "jgdj:" + p.id,
-    type: "detail",
+    type: "url",
     title: t(drama.title || p.id),
     coverUrl: cover,
     posterPath: cover,
@@ -526,69 +491,28 @@ async function loadDetail(link) {
 
   var cover = __capyCoverOf(detail);
   var rawEps = detail.episodeItems || detail.childItems || [];
+  // 懒解析直通：不预取任何集地址，详情一次 API 调用即返回，不转圈。
+  // 点播时 App 调 loadResource 单集现取。
   var eps = [];
   for (var i = 0; i < rawEps.length; i++) {
     var raw = rawEps[i] || {};
-    var ep = {
+    eps.push({
       id: raw.id || raw.link || "ep" + (i + 1),
+      name: raw.title || raw.name || "第" + (i + 1) + "集",
       title: raw.title || raw.name || "第" + (i + 1) + "集",
       episodeNumber: raw.episodeNumber || i + 1,
       seasonNumber: raw.seasonNumber || 1,
       link: raw.link || "",
-      videoUrl: raw.videoUrl || "",
-      url: raw.videoUrl || "",
-      playUrl: raw.videoUrl || "",
       posterUrl: cover,
-      backdropUrl: cover,
-      playerType: "system"
-    };
-    if (raw.customHeaders) {
-      ep.customHeaders = raw.customHeaders;
-      ep.headers = raw.customHeaders;
-    }
-    eps.push(ep);
+      backdropUrl: cover
+    });
   }
-
-  // 分批并行解析剩余集数（单集失败不影响整表）
-  var MAX = 150;
-  var BATCH = 6;
-  var todoIdx = [];
-  for (var ti = 0; ti < eps.length && ti < MAX; ti++) {
-    if (!eps[ti].videoUrl) todoIdx.push(ti);
-  }
-  for (var b = 0; b < todoIdx.length; b += BATCH) {
-    await Promise.all(
-      todoIdx.slice(b, b + BATCH).map(async function (idx) {
-        var u = await __capyResolveOne(eps[idx]);
-        if (u) {
-          eps[idx].videoUrl = u;
-          eps[idx].url = u;
-          eps[idx].playUrl = u;
-        }
-      })
-    );
-  }
-
-  var firstUrl = detail.videoUrl || "";
-  if (!firstUrl) {
-    for (var fi = 0; fi < eps.length; fi++) {
-      if (eps[fi].videoUrl) {
-        firstUrl = eps[fi].videoUrl;
-        break;
-      }
-    }
-  }
-
-  detail.type = "detail";
+  detail.type = "url";
   detail.episodes = eps;
   detail.episodeItems = eps;
   detail.childItems = eps;
   detail.seasons = eps.length
     ? [{ title: "第1季", name: "第1季", seasonNumber: 1, episodes: eps }]
     : [];
-  detail.videoUrl = firstUrl;
-  detail.url = firstUrl;
-  detail.playUrl = firstUrl;
-  detail.playerType = firstUrl ? "system" : "none";
   return detail;
 }
