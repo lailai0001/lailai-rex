@@ -3,13 +3,17 @@
  * 站点: https://jinguoduanju.app
  * 分类：navigationId（官方剧场导航）+ 本地 tags 过滤
  * 宣传: https://t.me/nostremby
+ * 1.1.5：详情照 JavRate 结构——type "detail"，seasons[].episodes 与
+ * episodeItems[] 每集直接带 Worker 代理 videoUrl（/ep/{episodeId}.m3u8），
+ * 不再懒解析。App 渲染季集网格并直接播每集 videoUrl。
+ * loadResource 只作回落：videoUrl 直通，否则单集现取 /play。
  */
 WidgetMetadata = {
   id: "lai_jinguo",
   title: "禁果短剧",
-  version: "1.1.4",
+  version: "1.1.5",
   requiredVersion: "0.0.1",
-  description: "禁果短剧：最新/热度/首页推荐/全部/原创/单体/动漫/影视/多集/单集/9 个题材，点播现取播放地址",
+  description: "禁果短剧：最新/热度/首页推荐/全部/原创/单体/动漫/影视/多集/单集/9 个题材，详情直接带每集播放地址",
   author: "lai",
   site: "https://t.me/nostremby",
   detailCacheDuration: 180,
@@ -53,8 +57,9 @@ WidgetMetadata = {
 
 var UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
-// jinguo-fetch Worker v2（已部署）：/api/v1 直通代理。/batch-play 已 403 弃用，
-// 本模块不再批量预取，详情只出集、点播时 loadResource 单集现取。
+// jinguo-fetch Worker v3（已部署）：/api/v1 直通代理 + /ep/{episodeId}.m3u8
+// 单集播单代理（现解真 m3u8、分片改写为绝对地址、HEAD 200）。
+// 详情每集 videoUrl 直接填代理地址，1 次详情 API 即回，不逐集调 /play。
 var WORKER = "https://jinguo-fetch.li768435813.workers.dev";
 var _token = "";
 var _deviceId = "";
@@ -331,6 +336,24 @@ function parseLink(link) {
   return { id: t(parts[0]), ep: t(parts[1] || "") };
 }
 
+// App 把卡片对象直接传给 loadDetail/loadResource，入口必先解出可播地址。
+// videoUrl 优先，其次 url/playUrl，再次 http(s) 的 link。
+function unwrapLink(v) {
+  if (!v) return "";
+  if (typeof v === "string") {
+    var s = t(v);
+    return /^https?:\/\//i.test(s) ? s : "";
+  }
+  if (typeof v === "object") {
+    if (v.videoUrl) return t(v.videoUrl);
+    if (v.url) return t(v.url);
+    if (v.playUrl) return t(v.playUrl);
+    if (v.link && /^https?:\/\//i.test(t(v.link))) return t(v.link);
+    return "";
+  }
+  return "";
+}
+
 async function loadDetailFwd(link) {
   var p = parseLink(link);
   if (!p.id) return null;
@@ -339,48 +362,99 @@ async function loadDetailFwd(link) {
   var drama = (data && data.drama) || {};
   var eps = (data && data.episodes) || [];
   var cover = absUrl(c.apiBase, drama.coverUrl || "");
-  // 懒解析：集只给 name/id/link，不预取地址（聚合短剧同款已证能播）。
-  // 点播时 loadResource 单集现取 /play（走 Worker 直通）。
+  var headers = {
+    "User-Agent": UA,
+    Referer: c.apiBase + "/",
+    Origin: c.apiBase
+  };
+  // 1.1.5（照 JavRate 结构）：详情 1 次 API 即回，每集直接带 Worker
+  // 代理播单地址 videoUrl，不逐集调 /play、不懒解析。
+  var flatEps = [];
+  var seasonEps = [];
   var episodeItems = [];
   for (var i = 0; i < eps.length; i++) {
     var ep = eps[i];
     var n = ep.number || i + 1;
-    var epLink = "jgdj:" + p.id + ":" + n + ":" + t(ep.id);
+    var episodeId = t(ep.id);
+    var epLink = "jgdj:" + p.id + ":" + n + ":" + episodeId;
+    var title = t(ep.title || "第" + n + "集");
+    var videoUrl = episodeId ? (WORKER + "/ep/" + encodeURIComponent(episodeId) + ".m3u8") : "";
+    var playLink = videoUrl || epLink;
+    flatEps.push({ name: title, link: epLink });
+    seasonEps.push({
+      title: title,
+      name: title,
+      videoUrl: videoUrl,
+      episodeNumber: Number(n) || i + 1,
+      link: playLink,
+      id: epLink,
+      customHeaders: headers,
+      playerType: "system"
+    });
     episodeItems.push({
       id: epLink,
-      name: t(ep.title || "第" + n + "集"),
-      title: t(ep.title || "第" + n + "集"),
+      name: title,
+      title: title,
       type: "url",
       mediaType: "tv",
       seasonNumber: 1,
       episodeNumber: Number(n) || i + 1,
-      link: epLink
+      videoUrl: videoUrl,
+      link: playLink,
+      posterPath: cover,
+      coverUrl: cover,
+      customHeaders: headers,
+      playerType: "system"
     });
   }
   if (!episodeItems.length) {
+    var epLink0 = "jgdj:" + p.id + ":1";
+    flatEps.push({ name: "第1集", link: epLink0 });
+    seasonEps.push({
+      title: "第1集",
+      name: "第1集",
+      videoUrl: "",
+      episodeNumber: 1,
+      link: epLink0,
+      id: epLink0,
+      customHeaders: headers,
+      playerType: "system"
+    });
     episodeItems.push({
-      id: "jgdj:" + p.id + ":1",
+      id: epLink0,
       name: "第1集",
       title: "第1集",
       type: "url",
       mediaType: "tv",
       seasonNumber: 1,
       episodeNumber: 1,
-      link: "jgdj:" + p.id + ":1"
+      videoUrl: "",
+      link: epLink0,
+      posterPath: cover,
+      coverUrl: cover,
+      customHeaders: headers,
+      playerType: "system"
     });
   }
   var tags = Array.isArray(drama.tags) ? drama.tags.join(" · ") : "";
+  var epCount = drama.episodeCount || eps.length || "";
+  var seasonTitle = epCount ? "全" + epCount + "集" : "第1季";
   return {
     id: "jgdj:" + p.id,
-    type: "url",
+    type: "detail",
     title: t(drama.title || p.id),
+    name: t(drama.title || p.id),
     coverUrl: cover,
     posterPath: cover,
     backdropPath: cover,
     description: t(data.description || tags || ""),
     mediaType: "tv",
     link: "jgdj:" + p.id,
-    episodeItems: episodeItems
+    playerType: "system",
+    episodes: flatEps,
+    seasons: [{ seasonNumber: 1, title: seasonTitle, name: seasonTitle, episodes: seasonEps }],
+    episodeItems: episodeItems,
+    childItems: episodeItems
   };
 }
 
@@ -397,40 +471,56 @@ async function resolveEpisodeId(c, dramaId, epNum) {
 
 async function loadResource(params) {
   params = params || {};
-  var c = cfg(params);
-  var raw = t(params.link || params.id || "");
-  var s = raw.replace(/^jinguo:/, "jgdj:");
-  if (s.indexOf("jgdj:") === 0) s = s.slice(5);
-  var parts = s.split(":");
-  var dramaId = t(parts[0]);
-  var epNum = t(parts[1] || "1") || "1";
-  var episodeId = t(parts[2] || "");
-  if (!dramaId) return [];
-  if (!episodeId) {
-    episodeId = await resolveEpisodeId(c, dramaId, epNum);
-  }
-  if (!episodeId) return [];
-  var play = await apiGet(c, "/episodes/" + encodeURIComponent(episodeId) + "/play");
-  var url = t((play && play.videoUrl) || "");
-  if (!url) return [];
-  return [
-    {
-      name: "禁果",
-      description: "第" + epNum + "集",
-      url: url,
-      playerType: "app",
-      customHeaders: {
-        "User-Agent": UA,
-        Referer: c.apiBase + "/",
-        Origin: c.apiBase,
-        "X-Forward-Skip-Redirect-Probe": "1"
-      }
+  try {
+    var c = cfg(params);
+    var headers = {
+      "User-Agent": UA,
+      Referer: c.apiBase + "/",
+      Origin: c.apiBase,
+      "X-Forward-Skip-Redirect-Probe": "1"
+    };
+    // 1. 直通：App 把带 videoUrl 的集对象直接传进来，优先原样返回。
+    var direct = unwrapLink(params);
+    if (!direct && params.link) direct = unwrapLink(params.link);
+    if (!direct && params.id) direct = unwrapLink(params.id);
+    if (direct) {
+      return [{ name: "禁果", url: direct, playerType: "system", customHeaders: headers }];
     }
-  ];
+    // 2. 回落：按 jgdj: token 解析，单集现取 /play。
+    var raw = "";
+    if (typeof params === "string") raw = params;
+    else raw = t(params.link || params.id || "");
+    var s = raw.replace(/^jinguo:/, "jgdj:");
+    if (s.indexOf("jgdj:") === 0) s = s.slice(5);
+    var parts = s.split(":");
+    var dramaId = t(parts[0]);
+    var epNum = t(parts[1] || "1") || "1";
+    var episodeId = t(parts[2] || "");
+    if (!dramaId) return [];
+    if (!episodeId) {
+      episodeId = await resolveEpisodeId(c, dramaId, epNum);
+    }
+    if (!episodeId) return [];
+    var play = await apiGet(c, "/episodes/" + encodeURIComponent(episodeId) + "/play");
+    var url = t((play && play.videoUrl) || "");
+    if (!url) return [];
+    return [
+      {
+        name: "禁果",
+        description: "第" + epNum + "集",
+        url: url,
+        playerType: "app",
+        customHeaders: headers
+      }
+    ];
+  } catch (e) {
+    return [];
+  }
 }
 // ================= CapyPlayer 适配层 =================
-// Capy 不走 Forward 的 loadResource 懒解析：详情里把全集播放地址预先解好，
-// 并把封面/视频字段按 Capy 规范（posterUrl/backdropUrl/videoUrl/episodes）补齐。
+// 1.1.5：直接返回 JavRate 结构（type detail + seasons/episodeItems/
+// childItems，每集带 videoUrl），不再剥成扁平懒解析。App 渲染季集网格
+// 并直接播每集 videoUrl。
 function __capyCoverOf(obj) {
   var cover =
     obj.posterPath || obj.coverUrl || obj.backdropPath || obj.detailPoster ||
@@ -447,22 +537,6 @@ function __capyCoverOf(obj) {
     obj.image = cover;
   }
   return cover;
-}
-
-async function __capyResolveOne(ep) {
-  if (ep.videoUrl) return ep.videoUrl;
-  if (!ep.link || typeof loadResource !== "function") return "";
-  try {
-    var r = await loadResource({ link: ep.link });
-    if (r && r.length && r[0] && r[0].url) {
-      if (r[0].customHeaders) {
-        ep.customHeaders = r[0].customHeaders;
-        ep.headers = r[0].customHeaders;
-      }
-      return r[0].url;
-    }
-  } catch (e) {}
-  return "";
 }
 
 async function loadDetail(link) {
@@ -490,28 +564,9 @@ async function loadDetail(link) {
   }
 
   var cover = __capyCoverOf(detail);
-  var rawEps = detail.episodeItems || detail.childItems || [];
-  // 聚合短剧同款懒解析：只返扁平 episodes（{name,id,link}），不带 seasons /
-  // episodeItems / childItems / mediaType。App 拿扁平集列表渲染，点集调
-  // loadResource 单集现取。带 seasons 时 App 会从季里找 videoUrl，
-  // 无 videoUrl 即判“暂无可用资源”。
-  var eps = [];
-  for (var i = 0; i < rawEps.length; i++) {
-    var raw = rawEps[i] || {};
-    var lk = raw.link || raw.id || "";
-    eps.push({ name: raw.title || raw.name || "第" + (i + 1) + "集", id: lk, link: lk });
-  }
-  return {
-    id: detail.id,
-    type: "url",
-    title: detail.title,
-    posterUrl: cover,
-    posterPath: cover,
-    coverUrl: cover,
-    backdropPath: cover,
-    description: detail.description || "",
-    remark: "共" + eps.length + "集",
-    episodes: eps,
-    link: detail.link || detail.id
-  };
+  detail.posterUrl = cover;
+  detail.posterPath = cover;
+  detail.coverUrl = cover;
+  detail.backdropPath = cover;
+  return detail;
 }
