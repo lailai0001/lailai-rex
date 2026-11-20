@@ -1,12 +1,27 @@
+// Bitch Lives for REX (NSFW-LIVE-rex-fixed.js v1.0.1)
+// v1.0.1（2026-11-21）：弱版搜索——站方无搜索接口（API 只有按分类取列表），
+// 全局搜索只拉默认分类（卡哇伊 jsonkawayi）一个文件、按房间 title 含关键词过滤，
+// 其余 ~126 个分类不在搜索范围内；搜索条目标题已注明“仅卡哇伊分类”，不要误当全站搜索。
+// 双声明写法照 JavRate 1.0.6（已真机证实能进搜索源列表）。
 var WidgetMetadata = {
   id: "Bitch",
   title: "Bitch Lives",
   description: "Bitch Lives",
   author: "Discount Code：VEUS",
   site: "Discount Code：VEUS",
-  version: "1.0.0",
+  version: "1.0.1",
   requiredVersion: "0.0.1",
   modules: [
+    {
+      id: "search",
+      title: "搜索（仅卡哇伊分类）",
+      functionName: "search",
+      cacheDuration: 60,
+      params: [
+        { name: "keyword", title: "关键词", type: "input" },
+        { name: "page", title: "页码", type: "page" }
+      ]
+    },
     {
       id: "live",
       title: "碧池直播",
@@ -165,7 +180,15 @@ var WidgetMetadata = {
       cacheDuration: 0,
       params: []
     }
-  ]
+  ],
+  search: {
+    title: "搜索（仅卡哇伊分类）",
+    functionName: "search",
+    params: [
+      { name: "keyword", title: "关键词", type: "input" },
+      { name: "page", title: "页码", type: "page" }
+    ]
+  }
 };
 
 async function getVideos(params = {}) {
@@ -222,6 +245,53 @@ async function getVideos(params = {}) {
 
   } catch (error) {
     throw new Error(`视频获取失败: ${error.message}`);
+  }
+}
+
+// 弱版搜索：只搜默认分类（卡哇伊 jsonkawayi），按房间 title 含关键词过滤。
+// 站方无搜索接口，只拉一个分类文件；其余分类不在搜索范围内（见文件头注释）。
+async function search(params) {
+  params = params || {};
+  var wd = "";
+  var keys = ["keyword", "q", "search", "text", "query", "wd", "key"];
+  for (var i = 0; i < keys.length; i++) {
+    if (params[keys[i]]) { wd = String(params[keys[i]]).trim(); break; }
+  }
+  if (!wd) return [{ id: "tip", type: "url", title: "输入关键词搜索" }];
+  try {
+    var url = "http://api.maiyoux.com:81/mf/jsonkawayi.txt";
+    var res = await Widget.http.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 4.4.2; OPPO R11 Build/NMF26X) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/30.0.0.0 Mobile Safari/537.36',
+        "Content-Type": "application/octet-stream"
+      }
+    });
+    var data = res && res.data;
+    if (data == null || data === "") return [{ id: "empty", type: "url", title: "没有找到相关影片" }];
+    if (typeof data === "string") {
+      try { data = JSON.parse(data.trim()); } catch (_) { return [{ id: "err", type: "url", title: "搜索失败: 数据格式错误" }]; }
+    }
+    if (typeof data !== "object" || !data || !Array.isArray(data.zhubo)) {
+      return [{ id: "empty", type: "url", title: "没有找到相关影片" }];
+    }
+    var needle = wd.toLowerCase();
+    var list = data.zhubo
+      .filter(function (item) { return item.address && item.title && String(item.title).toLowerCase().indexOf(needle) !== -1; })
+      .map(function (item) {
+        return {
+          id: item.address,
+          type: "url",
+          title: String(item.title).trim(),
+          mediaType: "movie",
+          link: item.address,
+          coverUrl: item.img || '',
+          posterPath: item.img || '',
+          backdropPath: item.img || ''
+        };
+      });
+    return list.length ? list : [{ id: "empty", type: "url", title: "没有找到相关影片" }];
+  } catch (e) {
+    return [{ id: "err", type: "url", title: "搜索失败: " + String((e && e.message) || e).slice(0, 50) }];
   }
 }
 
