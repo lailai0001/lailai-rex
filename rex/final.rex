@@ -872,15 +872,9 @@
       "title": "七猫短剧",
       "description": "七猫短剧（7maoduanju.com）：热门榜/最新上线/全部短剧/魔改愿望榜，详情全集直链播放",
       "requiredVersion": "0.0.1",
-<<<<<<< Updated upstream
-      "version": "1.0.9",
-      "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_7mao_1.0.9.js"
-=======
       "version": "1.1.0",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_7mao_1.1.0.js"
->>>>>>> Stashed changes
     },
     {
       "id": "lai_rdd22",
@@ -1040,15 +1034,9 @@
       "title": "野果短剧",
       "description": "",
       "requiredVersion": "0.0.1",
-<<<<<<< Updated upstream
-      "version": "1.0.8",
-      "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_yeguo_1.0.8.js"
-=======
       "version": "1.0.9",
       "author": "",
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_yeguo_1.0.9.js"
->>>>>>> Stashed changes
     },
     {
       "id": "lai_youzidj",
@@ -1069,8 +1057,4 @@
       "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_subtitleagg_1.0.4.js"
     }
   ]
-<<<<<<< Updated upstream
 }
-=======
-}
->>>>>>> Stashed changes
