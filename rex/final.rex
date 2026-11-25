@@ -872,9 +872,9 @@
       "title": "七猫短剧",
       "description": "七猫短剧（7maoduanju.com）：热门榜/最新上线/全部短剧/魔改愿望榜，详情全集直链播放",
       "requiredVersion": "0.0.1",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_7mao_1.1.0.js"
+      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_7mao_1.1.1.js"
     },
     {
       "id": "lai_rdd22",
