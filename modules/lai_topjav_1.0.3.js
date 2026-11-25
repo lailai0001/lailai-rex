@@ -1,0 +1,444 @@
+// v1.0.3：AVDB 样式详情核实（真站页）：① 女演员链接是 /cn/pornstar/<slug>（标签"女演员:"），原版 TAX_ACTRESS_RE 没有 pornstar，peoples 恒空；② 导航栏有 /cn/categories/uncensored|censored|reducing_mosaic 三个菜单项，整页扫会算成本片分类——改只取 class 含 btn-outline-secondary 的分类按钮（本片：2 女优 + 4 类型 + 4 自有类别，Hanamori Kaho 页 30 条全是本人作品）；genreItems 补 link；补全覆盖派发（loadList peopleId/genreId、loadDetail 裸名先女优后类型再搜索）
+// TopJAV for REX (lai_topjav v1.0.1)
+// v1.0.1（2026-11-21）：补顶层 search 键（A 键，照 64 个可见模块的众数形状）；B 条目与 search 函数一个字未动。
+// 移植自 mira-cat 蜘蛛 py_topjav.js（只读蓝图），后端 https://topjav.tv/cn（另有 /en /kr /tw；详情规范 /video/{id}）。
+// 列表：<article class="movie-item">，链接 /cn/video/{id}，封面 topjav.tv/storage/images/{id}/thumbnail.jpg，
+//   标题 <h3 class="movie-link">；分页 ?page=N。
+// 详情：只给播放线（猫源 detail 只给“播放$详情页”线，签名现取现解，绝不把解出的签名 URL 存成静态线）；
+//   本模块 loadDetail 内现取现解：详情页内联混淆脚本的 jwplayer 配置 file: f("<约 220 字符>")；
+//   f 的真身是 slice(16, -16) → 反转 → base64 解码 → https://topjav.tv/m3u8/{id}.m3u8?time={epoch}&sig={sha256hex}&sig2={短串}；
+//   签名有时效，解出即用；本站未见分辨率档，单线 master。
+// 搜索：站内表单 action=/cn/search，字段名 s → /cn/search?s={wd}。
+// base64 解码为纯字符串运算，不依赖运行环境的编解码接口。
+// 字幕：猫源本身无字幕线，本模块不接。
+
+WidgetMetadata = {
+  id: "lai_topjav",
+  title: "TopJAV",
+  description: "TopJAV（topjav.tv/cn）：最新/热门/有码/无码/减码等 26 个分类，详情现解签名 m3u8 单线",
+  author: "lai",
+  version: "1.0.3",
+  requiredVersion: "0.0.1",
+  site: "https://topjav.tv/cn",
+  detailCacheDuration: 180,
+  modules: [
+    { title: "搜索", functionName: "search", cacheDuration: 60, params: [ { name: "keyword", title: "关键词", type: "input" }, { name: "page", title: "页码", type: "page" } ] },
+    { title: "最新", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "热门", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/popular" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "有码", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/categories/censored" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "无码", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/categories/uncensored" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "减码", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/categories/reducing_mosaic" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "巨乳", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/busty" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "屁股", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/butt" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "巨臀", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/huge-butt" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "中出", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/creampie" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "口交", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/blowjob" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "角色扮演", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/cosplay" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "校园", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/school-girls" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "人妻", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/housewife" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "年轻妻", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/young-wife" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "女同", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/lesbian" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "肛交", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/anal" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "捆绑", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/bondage" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "按摩", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/massage" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "制服", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/uniform" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "潮吹", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/squirting" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "第一视角", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/pov" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "硬核", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/hardcore" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "轮奸", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/gangbang" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "苗条", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/slender" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "骑乘", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/cowgirl" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "颜射", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/cn/genre/bukkake" }, { name: "page", title: "页码", type: "page", value: "1" } ] }
+  ],
+  search: {
+    title: "搜索",
+    functionName: "search",
+    params: [
+      { name: "keyword", title: "关键词", type: "input" },
+      { name: "page", title: "页码", type: "page" }
+    ]
+  }
+};
+
+var HOST = "https://topjav.tv";
+var LANG = "/cn";
+var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+var B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function t(v) {
+  return String(v == null ? "" : v).trim();
+}
+
+function cleanText(s) {
+  return t(s)
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, function (m, n) { return String.fromCharCode(parseInt(n, 10)); })
+    .replace(/&#x([0-9a-fA-F]+);/g, function (m, h) { return String.fromCharCode(parseInt(h, 16)); })
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ");
+}
+
+function firstMatch(text, re, idx) {
+  var m = String(text || "").match(re);
+  return m ? t(m[idx || 1] || "") : "";
+}
+
+function pageHeaders(referer) {
+  return {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": referer || HOST + LANG
+  };
+}
+
+async function getText(url, referer) {
+  var res = await Widget.http.get(url, { headers: pageHeaders(referer) });
+  var body = res && res.data != null ? String(res.data) : "";
+  if (!body) throw new Error("空回应");
+  return body;
+}
+
+// 纯字符串 base64 解码，返回 latin1 字符串（每个字符即一个字节）
+function b64ToLatin1(s) {
+  s = String(s || "").replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+\/=]/g, "");
+  while (s.length % 4) s += "=";
+  var out = "";
+  for (var i = 0; i < s.length; i += 4) {
+    var c0 = B64_ALPHABET.indexOf(s.charAt(i));
+    var c1 = B64_ALPHABET.indexOf(s.charAt(i + 1));
+    var c2 = B64_ALPHABET.indexOf(s.charAt(i + 2));
+    var c3 = B64_ALPHABET.indexOf(s.charAt(i + 3));
+    if (c0 < 0 || c1 < 0) break;
+    out += String.fromCharCode((c0 << 2) | (c1 >> 4));
+    if (c2 >= 0) out += String.fromCharCode(((c1 & 15) << 4) | (c2 >> 2));
+    if (c3 >= 0) out += String.fromCharCode(((c2 & 3) << 6) | c3);
+  }
+  return out;
+}
+
+// latin1 字节串按 UTF-8 解码（手工实现，不依赖运行环境解码接口）
+function latin1ToUtf8(s) {
+  var out = "";
+  var i = 0;
+  while (i < s.length) {
+    var c = s.charCodeAt(i);
+    i++;
+    if (c < 128) {
+      out += String.fromCharCode(c);
+    } else if ((c & 224) === 192 && i < s.length) {
+      var c2 = s.charCodeAt(i);
+      i++;
+      out += String.fromCharCode(((c & 31) << 6) | (c2 & 63));
+    } else if ((c & 240) === 224 && i + 1 < s.length) {
+      var d2 = s.charCodeAt(i);
+      var d3 = s.charCodeAt(i + 1);
+      i += 2;
+      out += String.fromCharCode(((c & 15) << 12) | ((d2 & 63) << 6) | (d3 & 63));
+    } else if ((c & 248) === 240 && i + 2 < s.length) {
+      var e2 = s.charCodeAt(i);
+      var e3 = s.charCodeAt(i + 1);
+      var e4 = s.charCodeAt(i + 2);
+      i += 3;
+      var cp = ((c & 7) << 18) | ((e2 & 63) << 12) | ((e3 & 63) << 6) | (e4 & 63);
+      cp -= 65536;
+      out += String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023));
+    } else {
+      out += String.fromCharCode(c);
+    }
+  }
+  return out;
+}
+
+// 签名 URL 现解：slice(16, -16) → 反转 → base64 解码；解出非 topjav m3u8 的一律作废
+function decodeSigned(html) {
+  var fm = String(html || "").match(/file\s*:\s*f\("([^"]{100,})"\)/i)
+    || String(html || "").match(/f\("([^"]{150,})"\)/);
+  if (!fm) return "";
+  var enc = fm[1];
+  try {
+    var sliced = enc.slice(16, -16);
+    var rev = sliced.split("").reverse().join("");
+    var out = latin1ToUtf8(b64ToLatin1(rev));
+    if (/^https:\/\/topjav\.tv\/(cn\/)?m3u8\//i.test(out)) return out;
+  } catch (e) { /* 作废 */ }
+  return "";
+}
+
+function parseCards(html) {
+  var items = [];
+  var seen = {};
+  var re = /<article[^>]*class="[^"]*movie-item[^"]*"[^>]*>([\s\S]{0,6000}?)<\/article>/gi;
+  var m;
+  while ((m = re.exec(html))) {
+    var blk = m[1];
+    var lm = blk.match(/<a[^>]*href="([^"]*\/video\/\d+[^"]*)"[^>]*>/i);
+    if (!lm) continue;
+    var href = lm[1];
+    if (!/^https?:\/\//i.test(href)) href = HOST + (href.charAt(0) === "/" ? href : "/" + href);
+    if (seen[href]) continue;
+    seen[href] = 1;
+    var clean = blk.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    var pic = "";
+    var imgRe = /<img[^>]*>/gi;
+    var tagM;
+    while ((tagM = imgRe.exec(clean))) {
+      var sm = tagM[0].match(/(?:data-src|data-original|src)\s*=\s*"([^"]+)"/i);
+      if (sm && sm[1] && sm[1].indexOf("data:image") !== 0) {
+        pic = /^https?:\/\//i.test(sm[1]) ? sm[1] : HOST + (sm[1].charAt(0) === "/" ? sm[1] : "/" + sm[1]);
+        break;
+      }
+    }
+    var title = "";
+    var tm = clean.match(/<h3[^>]*>([\s\S]{0,400}?)<\/h3>/i);
+    if (tm) title = cleanText(tm[1]);
+    if (!title) {
+      var am = clean.match(/title="([^"]+)"/i);
+      if (am) title = cleanText(am[1]);
+    }
+    if (!title || title.length < 2) continue;
+    var remarks = "";
+    var vm = clean.match(/([\d,]+)\s*(?:views|次|观看)/i);
+    if (vm) remarks = vm[1];
+    items.push({
+      id: href,
+      type: "url",
+      title: title,
+      posterPath: pic,
+      coverUrl: pic,
+      backdropPath: pic,
+      link: href,
+      description: remarks,
+      mediaType: "movie"
+    });
+    if (items.length >= 60) break;
+  }
+  return items;
+}
+
+function listOrMsg(html, url) {
+  if (!html) return [{ id: "empty", type: "url", title: "空页面" }];
+  var list = parseCards(html);
+  return list.length ? list : [{ id: "empty", type: "url", title: "没有找到相关内容", description: "URL: " + url }];
+}
+
+function listUrl(cat, page) {
+  page = Math.max(1, parseInt(page, 10) || 1);
+  cat = t(cat) || LANG;
+  var base = (/^https?:\/\//i.test(cat) ? cat : HOST + "/" + cat.replace(/^\/+/, "")).replace(/\/+$/, "");
+  return page === 1 ? base : base + "?page=" + page;
+}
+
+async function loadList(params) {
+  params = params || {};
+  // 全覆盖派发：App 点 peoples/genreItems 可能调 loadList(peopleId/genreId)。
+  var _pid = t(params.peopleId || params.personId || "");
+  var _gid = t(params.genreId || params.genre || "");
+  if (_pid || _gid) {
+    var _tok = _pid || _gid;
+    var _pm = _tok.match(/\/(pornstar|genre|categories)\/([^\/\?#]+)/);
+    if (_pm) return await loadList({ path: "/cn/" + _pm[1] + "/" + _pm[2].split("/")[0], page: params.page || 1 });
+    if (/^https?:\/\//i.test(_tok)) { var _p2 = _tok.replace(/^https?:\/\/[^\/]+\//, ""); return await loadList({ path: _p2, page: params.page || 1 }); }
+    var _pre = _tok.match(/^(actor|genre|tag|category):(.+)$/);
+    if (_pre) { var _kind = _pre[1] === "actor" ? "pornstar" : (_pre[1] === "category" ? "categories" : "genre"); return await loadList({ path: "/cn/" + _kind + "/" + _pre[2], page: params.page || 1 }); }
+    var _slug = _tok.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+    var _w = await loadList({ path: "/cn/pornstar/" + _slug, page: 1 });
+    if (taxRealWorks(_w || []).length) return _w;
+    var _w2 = await loadList({ path: "/cn/genre/" + _slug, page: 1 });
+    if (taxRealWorks(_w2 || []).length) return _w2;
+    return await search({ keyword: _tok, page: params.page || 1 });
+  }
+  var page = parseInt(params.page, 10) || 1;
+  var cat = String(params.path || params.cat || LANG);
+  var url = listUrl(cat, page);
+  try {
+    var html = await getText(url, HOST + LANG);
+    return listOrMsg(html, url);
+  } catch (e) {
+    var msg = String((e && e.message) || e);
+    return [{ id: "err", type: "url", title: "载入失败: " + msg.slice(0, 50), description: msg + " | URL: " + url }];
+  }
+}
+
+function pickKeyword(params) {
+  if (params == null) return "";
+  if (typeof params === "string" || typeof params === "number") return String(params).trim();
+  var keys = ["keyword", "q", "search", "text", "query", "wd", "key"];
+  for (var i = 0; i < keys.length; i++) {
+    if (params[keys[i]]) return String(params[keys[i]]).trim();
+  }
+  return "";
+}
+
+async function search(params) {
+  params = params || {};
+  var wd = pickKeyword(params);
+  var page = parseInt(params.page, 10) || 1;
+  if (!wd) return [{ id: "tip", type: "url", title: "输入关键词后搜索" }];
+  var url = HOST + LANG + "/search?s=" + encodeURIComponent(wd) + (page > 1 ? "&page=" + page : "");
+  try {
+    var html = await getText(url, HOST + LANG);
+    return listOrMsg(html, url);
+  } catch (e) {
+    var msg = String((e && e.message) || e);
+    return [{ id: "err", type: "url", title: "搜索失败: " + msg.slice(0, 50), description: msg + " | URL: " + url }];
+  }
+}
+
+function absTaxLink(href) {
+  var s = String(href || "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.indexOf("//") === 0) return "https:" + s;
+  if (s.charAt(0) === "/") return HOST + s;
+  return HOST + "/" + s;
+}
+
+// ---- AVDB 样式详情：演员/分类（点按出对应全部内容）----
+var TAX_ACTRESS_RE = /\/actress(?:es)?\/|\/actors?\/|\/pornstars?\/|\/star\/|\/stars\/|\/performer\/|\/models?\/|\/idols?\//i;
+var TAX_GENRE_RE = /\/(genres?|tags?|categor(?:y|ies)|labels?|makers?|category)\//i;
+var TAX_NAV_NAME_RE = /^(genres?|tags?|categor(?:y|ies)|category|actress(es)?|actors?|stars?|star|performers?|models?|pornstars?|makers?|labels?|studios?|all|全部|分类|演员|标签|女优|题材|片商)$/i;
+
+function taxRealWorks(works) {
+  var out = [];
+  for (var i = 0; i < works.length; i++) {
+    var w = works[i];
+    if (w && w.id !== "err" && w.id !== "err_cf" && w.id !== "empty" && w.id !== "tip" && w.id !== "supjav-diag-parse" && String(w.id || "").indexOf("supjav-diag") !== 0) out.push(w);
+  }
+  return out;
+}
+
+function extractTaxonomyFromHtml(html) {
+  var peoples = [];
+  var genreItems = [];
+  var seenP = {};
+  var seenG = {};
+  var baseHost = String(HOST || "").replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+  var seenUrlP = {};
+  var seenUrlG = {};
+  var re = /<a[^>]+href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  var m;
+  while ((m = re.exec(html)) !== null) {
+    // 只取详情信息块里的分类按钮（class 含 btn-outline-secondary）：导航栏的
+    // /cn/categories/uncensored|censored|reducing_mosaic 是全站菜单，不是本片分类。
+    if (m[0].indexOf("btn-outline-secondary") < 0) continue;
+    var href = m[1] || "";
+    var name = String(m[2] || "").replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+    if (!name || name.length > 40 || TAX_NAV_NAME_RE.test(name)) continue;
+    var abs = absTaxLink(href);
+    if (!/^https?:\/\//i.test(abs)) continue;
+    var host = abs.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+    if (baseHost && host !== baseHost) continue;
+    var after = abs.split(/\/actress(?:es)?\/|\/actors?\/|\/pornstars?\/|\/star\/|\/stars\/|\/performer\/|\/models?\/|\/idols?\/|\/genres?\/|\/tags?\/|\/categor(?:y|ies)\/|\/category\/|\/labels?\/|\/makers?\/|\/studios?\//i)[1] || "";
+    after = after.split("?")[0].split("#")[0].replace(/\/+$/, "");
+    if (!after) continue;
+    if (TAX_ACTRESS_RE.test(abs)) {
+      if (seenUrlP[abs]) continue;
+      seenUrlP[abs] = 1;
+      if (seenP[name]) continue;
+      seenP[name] = 1;
+      if (peoples.length < 20) peoples.push({ id: abs, title: name, name: name, link: abs, role: "演员" });
+    } else if (TAX_GENRE_RE.test(abs)) {
+      if (seenUrlG[abs]) continue;
+      seenUrlG[abs] = 1;
+      if (seenG[name]) continue;
+      seenG[name] = 1;
+      if (genreItems.length < 20) genreItems.push({ id: abs, title: name, link: abs });
+    }
+    if (peoples.length >= 20 && genreItems.length >= 20) break;
+  }
+  return { peoples: peoples, genreItems: genreItems };
+}
+
+async function taxRoute(url) {
+  var isActress = TAX_ACTRESS_RE.test(url);
+  var slug = "";
+  try { slug = decodeURIComponent((String(url).split("?")[0].split("#")[0].replace(/\/+$/, "").split("/").pop() || "")); } catch (_) { slug = ""; }
+  var dispName = slug.replace(/-/g, " ");
+  var taxPath = String(url).replace(/^https?:\/\/[^/]+\//, "");
+  var works = [];
+  try {
+    works = await loadList({ path: taxPath, page: 1 });
+  } catch (_) { works = []; }
+  if (!Array.isArray(works)) works = [];
+  var realWorks = taxRealWorks(works);
+  if (!realWorks.length && slug) {
+    try {
+      var sw = await search({ keyword: slug.replace(/-/g, " ") });
+      if (Array.isArray(sw)) { works = sw; realWorks = taxRealWorks(sw); }
+    } catch (_) {}
+  }
+  return {
+    id: url,
+    type: "detail",
+    mediaType: "movie",
+    title: dispName || slug || (isActress ? "演员" : "分类"),
+    link: url,
+    description: (isActress ? "演员" : "分类") + " · 共 " + realWorks.length + " 部作品",
+    videoUrl: "",
+    childItems: [],
+    relatedItems: realWorks.length ? realWorks : works
+  };
+}
+
+async function loadDetail(link) {
+  try {
+    var rawLink = link;
+    if (rawLink && typeof rawLink === "object") rawLink = rawLink.link || rawLink.id || rawLink.url || rawLink.videoUrl || "";
+    var url = String(rawLink || "");
+    // 裸名：先当女优走 /cn/pornstar/<slug>，再当类型走 /cn/genre/<slug>，皆空才走搜索详情
+    if (url && url.indexOf("/") < 0 && url.indexOf("http") !== 0) {
+      // 纯数字裸 id 即视频 id（/cn/video/<id>），不走人名路由
+      if (/^\d+$/.test(url)) { url = HOST + LANG + "/video/" + url; }
+      else {
+      var _slugB = url.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+      var _adB = await taxRoute(HOST + LANG + "/pornstar/" + _slugB);
+      if (_adB && taxRealWorks(_adB.relatedItems || []).length) return _adB;
+      var _gdB = await taxRoute(HOST + LANG + "/genre/" + _slugB);
+      if (_gdB && taxRealWorks(_gdB.relatedItems || []).length) return _gdB;
+      var _swB = await search({ keyword: url });
+      var _rwB = taxRealWorks(_swB || []);
+      return { id: "search:" + url, type: "detail", mediaType: "movie", title: url, link: "search:" + url, description: "搜索 · 共 " + _rwB.length + " 部作品", videoUrl: "", childItems: [], relatedItems: _rwB.length ? _rwB : (_swB || []) };
+      }
+    }
+    if (!/^https?:\/\//i.test(url)) url = HOST + (url.charAt(0) === "/" ? url : "/" + url);
+    if (!url) return { id: "err", type: "url", title: "解析失败", description: "链接为空" };
+    if (TAX_ACTRESS_RE.test(url) || TAX_GENRE_RE.test(url)) {
+      return await taxRoute(url);
+    }
+    var html = await getText(url, HOST + LANG);
+    var title = firstMatch(html, /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
+      || cleanText(firstMatch(html, /<h1[^>]*>([\s\S]{0,400}?)<\/h1>/i))
+      || "TopJAV";
+    var cover = firstMatch(html, /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+    if (!cover) {
+      var idm = url.match(/\/video\/(\d+)/);
+      if (idm) cover = HOST + "/storage/images/" + idm[1] + "/thumbnail.jpg";
+    }
+    var videoUrl = decodeSigned(html);
+    if (!videoUrl) {
+      return { id: url, type: "url", title: title, description: "未找到播放地址" };
+    }
+    var ret = {
+      id: url,
+      type: "detail",
+      title: title,
+      link: url,
+      posterPath: cover,
+      coverUrl: cover,
+      backdropPath: cover,
+      videoUrl: videoUrl,
+      playerType: "app",
+      customHeaders: { "User-Agent": UA, "Referer": url }
+    };
+    var tax = extractTaxonomyFromHtml(html);
+    if (tax.peoples.length) ret.peoples = tax.peoples;
+    if (tax.genreItems.length) ret.genreItems = tax.genreItems;
+    return ret;
+  } catch (e) {
+    return { id: String(link || "err"), type: "url", title: "请求错误", description: String((e && e.message) || e) };
+  }
+}

@@ -1,0 +1,819 @@
+// v1.0.5：AVDB 样式详情核实（真 API 数据）：① 分类分两类——labelTitles + label 数字 id 走分类接口（label:347 黑料页 6322 条全是黑料，含本片）；classifyTitles 无按 id 查列表的接口（type=cate&typeId=130 回 total 0），只能走关键词搜索（实测搜"吃瓜"/"网曝黑料"回的页全带该标签，含本片）→ tag:<名>；原版两类一律 tag: 走搜索，分类点按丢了精确的分类接口；② actor 字段恒为空串、author 只是上传者，peoples 诚实留空；③ 剧照：详情 content 里的 <img> 剧照走签名接口进 backdropPaths；补全覆盖派发（loadList peopleId/genreId、loadDetail 裸名走 tag 搜索详情）
+// Uu视频 for REX (lai_uu_video v1.0.0)
+// 来源蜘蛛：mira-cat uu_video.js（py_uuvideo），后端 https://nfu.rftsln9.com（入口 utv2.cc）。
+// 原理与蜘蛛一致：公开 JSON API（响应为 base64url + XOR 加密，key 随响应下发）取分类/列表/详情/搜索；
+// 播放地址与封面签名需"指纹登录"（随机指纹，站方公开的游客登录方式，与蜘蛛相同，非伪造凭证）：
+//   播放：GET /api/v2/home/user/video/play/url → masterUrl + 视频 CDN 列表拼接成完整 m3u8；
+//   选档（2026-10-21 画质修复）：play/url 只回 master/720p/480p 三个字段、无 1080p（实测多样本主列表
+//   只有 1280x720 与 854x480 两档）；旧版直返主列表、播放器自适应常停在 480 档显得低清，
+//   现改为 loadDetail 内拉主列表解析变体、直返最高档（720）媒体列表，失败回退主列表。
+// v1.0.1（2026-11-09，分辨率选择）：pickBestVariant 只返最高档 →
+//   pickAllVariants 返回主列表全部变体（720p/480p），loadDetail 每档一集，
+//   seasons/episodes + episodeItems 每集带 videoUrl；主列表解析失败时
+//   回落 master/p720/p480 三字段各拼 CDN 成档（无 1080p，不编造）。
+//   封面：thumb 是 .enc 加密图，POST /api/v2/home/user/cdn/sign 批量签名后才是可访问的真实图片地址。
+// 蜘蛛里的 PoW vv_challenge cookie 流程在现行调用链中实际未被使用（公开 API 不带 cookie 也可调用），故未移植。
+// 蜘蛛里的 uu-proxy Worker 仅用于旧版相对路径播放地址，现行主流程（数字 id → play/url API）不走它，故未使用。
+// 与 lai_uu（UU直播破解，cmk.uuzbpj7.hair 的 HTML 站）是两个完全不同的站，勿混淆。
+// v1.0.3（2026-11-15，用户令多加分类）：实测 /api/v2/home/public/video/cate/list
+//   type=long 仍是 18 个分类（14 个在用 + 探花360/新闻357/VR346/其他269 四个
+//   是用户 2026-10-19 令隐藏的，不加回）；type=short 新增 4 个，其中
+//   短视频354（14023 部）、91精选短视频355（34 部）有内容，测试338/测试3
+//   340 均 0 条不加。标签接口 type=label 实测回 code 50，不可用，不加。
+//   故新增「短视频」顶级分类（354/355，videoType=short），其余 14 分类与
+//   播放行为一个字不动；短视频同样走 long/detail（实测可解，无 short/detail 接口）。
+
+WidgetMetadata = {
+  id: "lai_uu_video",
+  title: "Uu视频",
+  description: "Uu视频（nfu.rftsln9.com）：热门/国产/日本AV/无码/中字等 14 个长视频分类 + 短视频/91精选 2 个短视频分类，指纹登录取播放地址，封面走官方签名接口",
+  author: "lai",
+  version: "1.0.5",
+  requiredVersion: "0.0.1",
+  site: "https://nfu.rftsln9.com",
+  detailCacheDuration: 180,
+  modules: [
+    {
+      title: "分类",
+      functionName: "loadList",
+      cacheDuration: 180,
+      params: [
+        {
+          name: "path",
+          title: "分类",
+          type: "enumeration",
+          value: "268",
+          enumOptions: [
+            { title: "热门", value: "268" },
+            { title: "国产", value: "262" },
+            { title: "日本AV", value: "263" },
+            { title: "AV无码", value: "343" },
+            { title: "AV中字", value: "344" },
+            { title: "欧美", value: "264" },
+            { title: "动漫", value: "267" },
+            { title: "三级", value: "341" },
+            { title: "AI换脸", value: "342" },
+            { title: "麻豆", value: "358" },
+            { title: "擦边短剧", value: "356" },
+            { title: "黑料", value: "347" },
+            { title: "传媒", value: "266" },
+            { title: "女主播", value: "345" }
+          ]
+        },
+        { name: "page", title: "页码", type: "page", value: "1" }
+      ]
+    },
+    {
+      title: "短视频",
+      functionName: "loadList",
+      cacheDuration: 180,
+      params: [
+        {
+          name: "path",
+          title: "分类",
+          type: "enumeration",
+          value: "short:354",
+          enumOptions: [
+            { title: "短视频", value: "short:354" },
+            { title: "91精选短视频", value: "short:355" }
+          ]
+        },
+        { name: "videoType", title: "类型", type: "constant", value: "short" },
+        { name: "page", title: "页码", type: "page", value: "1" }
+      ]
+    }
+  ],
+  search: {
+    title: "搜索",
+    functionName: "search",
+    params: [
+      { name: "keyword", title: "关键词", type: "input" },
+      { name: "page", title: "页码", type: "page" }
+    ]
+  }
+};
+
+var BASE = "https://nfu.rftsln9.com";
+var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
+// API 服务器列表（与蜘蛛一致）
+// v1.0.2 (2026-11-14): 4 个 :52000 旧站 3 死 1 回 HTML（实测 aa3/hlo/iv4
+// 连接失败, zje 回 HTML 不是 API JSON）; 入口 utv2.cc 回真 API JSON（与猫源
+// uu_video v2 同款, 用户 2026-11-14 已确认）, 故置首位。
+// 播放：站方 CDN 清单必须带 Referer: https://nfu.rftsln9.com/ 才取得到
+// （无 Referer 403；分片/密钥直连即可）, 故播放地址走 javsb-relay /uu
+// 中转（v2 新增路由，待用户部署；直连行兜底）。行一律 playerType "system"。
+var API_HOSTS = [
+  "https://utv2.cc",
+  "https://aa3.aa36jn.com:52000",
+  "https://zje.zje0cx.com:52000",
+  "https://hlo.hlos8o.com:52000",
+  "https://iv4.iv4muy.com:51999"
+];
+var RELAY_UU = "https://javsb-relay.li768435813.workers.dev/uu?u=";
+
+// 视频 CDN 降级列表（与蜘蛛一致，2026-10-19 配置实测；正常走 channel 接口动态获取）
+var FALLBACK_CDNS = [
+  "https://m338.xn--d9u11dw2l41at78afwi.xn--fiqs8s",
+  "https://fqu.fquauf.com:51666",
+  "https://vte.vteotx.com:51666",
+  "https://i1t.i1tyqh.com:51666",
+  "https://tmm.tmmr4x.com:51888"
+];
+
+// ---------- 纯 JS 工具（不依赖 Buffer / atob / TextDecoder） ----------
+var B64TAB = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+var B64REV = {};
+for (var bi = 0; bi < B64TAB.length; bi++) B64REV[B64TAB.charAt(bi)] = bi;
+
+function b64urlDecodeBytes(s) {
+  var b64 = String(s || "").replace(/-/g, "+").replace(/_/g, "/");
+  var out = [];
+  var buf = 0, bits = 0;
+  for (var i = 0; i < b64.length; i++) {
+    var ch = b64.charAt(i);
+    if (ch === "=") break;
+    var v = B64REV[ch];
+    if (v == null) continue;
+    buf = (buf << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buf >> bits) & 0xff);
+    }
+  }
+  return out;
+}
+
+function utf8Decode(bytes) {
+  var out = "";
+  var i = 0;
+  while (i < bytes.length) {
+    var b = bytes[i];
+    if (b < 0x80) {
+      out += String.fromCharCode(b);
+      i += 1;
+    } else if (b < 0xe0) {
+      out += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i + 1] & 0x3f));
+      i += 2;
+    } else if (b < 0xf0) {
+      out += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[i + 1] & 0x3f) << 6) | (bytes[i + 2] & 0x3f));
+      i += 3;
+    } else {
+      var cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3f) << 12) | ((bytes[i + 2] & 0x3f) << 6) | (bytes[i + 3] & 0x3f);
+      cp -= 0x10000;
+      out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+      i += 4;
+    }
+  }
+  return out;
+}
+
+// XOR 解密 API 响应（与蜘蛛 xorDecrypt 一致，key 为 ASCII）
+function xorDecrypt(dataB64, keyStr) {
+  var dataBytes = b64urlDecodeBytes(dataB64);
+  var key = String(keyStr || "");
+  var out = new Array(dataBytes.length);
+  for (var i = 0; i < dataBytes.length; i++) {
+    out[i] = dataBytes[i] ^ (key.charCodeAt(i % key.length) & 0xff);
+  }
+  var text = utf8Decode(out);
+  try { return JSON.parse(text); } catch (e) { return text; }
+}
+
+function t(v) {
+  return String(v == null ? "" : v).trim();
+}
+
+function qs(params) {
+  var parts = [];
+  for (var k in params) {
+    if (params[k] == null) continue;
+    parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(params[k])));
+  }
+  return parts.join("&");
+}
+
+// ---------- HTTP ----------
+async function httpGetText(url, headers) {
+  var res = await Widget.http.get(url, { headers: headers || {} });
+  if (!res) return "";
+  if (res.data == null) return "";
+  return typeof res.data === "string" ? res.data : JSON.stringify(res.data);
+}
+
+async function httpPostJson(url, obj, headers) {
+  if (!Widget.http || typeof Widget.http.post !== "function") return "";
+  var res = await Widget.http.post(url, JSON.stringify(obj), { headers: headers || {}, timeout: 25000 });
+  if (!res || res.data == null) return "";
+  return typeof res.data === "string" ? res.data : JSON.stringify(res.data);
+}
+
+function apiHeaders(extra) {
+  var h = {
+    "User-Agent": UA,
+    "Referer": BASE + "/",
+    "Accept": "application/json"
+  };
+  if (extra) for (var k in extra) h[k] = extra[k];
+  return h;
+}
+
+// 调用公开 API（自动 XOR 解密），与蜘蛛 apiCall 一致
+async function apiCall(apiPath, params) {
+  var query = qs(params || {});
+  for (var i = 0; i < API_HOSTS.length; i++) {
+    var url = API_HOSTS[i] + apiPath + (query ? "?" + query : "");
+    try {
+      var text = await httpGetText(url, apiHeaders());
+      if (!text) continue;
+      var resp = JSON.parse(text);
+      if (resp.code !== 200) continue;
+      if (!resp.data) return null;
+      return xorDecrypt(resp.data, resp.key || "");
+    } catch (e) { continue; }
+  }
+  return null;
+}
+
+// ---------- 指纹登录（与蜘蛛 ensureAccessToken 一致） ----------
+var _accessToken = "";
+var _tokenTime = 0;
+var TOKEN_TTL = 30 * 60 * 1000;
+
+function genFingerprint() {
+  var hex = "0123456789abcdef";
+  var s = "";
+  for (var i = 0; i < 32; i++) s += hex.charAt(Math.floor(Math.random() * 16));
+  return s;
+}
+
+async function ensureAccessToken() {
+  if (_accessToken && Date.now() - _tokenTime < TOKEN_TTL) return _accessToken;
+  var body = { channel: "tz", fingerPrint: genFingerprint() };
+  for (var i = 0; i < API_HOSTS.length; i++) {
+    try {
+      var text = await httpPostJson(API_HOSTS[i] + "/api-user/v2/login/fingerprint", body,
+        apiHeaders({ "Content-Type": "application/json" }));
+      if (!text) continue;
+      var resp = JSON.parse(text);
+      if (resp.code !== 200) continue;
+      var data = resp.data;
+      if (typeof data === "string" && data) {
+        try { data = xorDecrypt(data, resp.key || ""); } catch (e) { continue; }
+      }
+      var tk = data && (data.accessToken || data.token);
+      if (tk) {
+        _accessToken = tk;
+        _tokenTime = Date.now();
+        return _accessToken;
+      }
+    } catch (e) { continue; }
+  }
+  throw new Error("指纹登录失败");
+}
+
+// 调用需要鉴权的 API（与蜘蛛 apiCallAuth 一致）
+async function apiCallAuth(apiPath, params) {
+  var token = await ensureAccessToken();
+  var query = qs(params || {});
+  for (var i = 0; i < API_HOSTS.length; i++) {
+    var url = API_HOSTS[i] + apiPath + (query ? "?" + query : "");
+    try {
+      var text = await httpGetText(url, apiHeaders({ "Authorization": "Bearer " + token }));
+      if (!text) continue;
+      var resp = JSON.parse(text);
+      if (resp.code !== 200) {
+        if (resp.code === 401) _accessToken = "";
+        continue;
+      }
+      if (resp.data == null) return null;
+      if (typeof resp.data === "string" && resp.data) {
+        return xorDecrypt(resp.data, resp.key || "");
+      }
+      return resp.data;
+    } catch (e) { continue; }
+  }
+  return null;
+}
+
+// ---------- 封面签名（与蜘蛛 getImgCdn / signImages 一致） ----------
+var _imgCdn = null;
+async function getImgCdn() {
+  if (_imgCdn) return _imgCdn;
+  try {
+    var data = await apiCall("/api/v2/home/public/cdn/image/index", { channel: "tz" });
+    if (data && data.list && data.list.length > 0) {
+      var line = null;
+      for (var i = 0; i < data.list.length; i++) {
+        if (data.list[i].picVideoUrl || data.list[i].picUrl) { line = data.list[i]; break; }
+      }
+      if (!line) line = data.list[0];
+      var pic = String(line.picVideoUrl || line.picUrl || "").replace(/\/+$/, "");
+      var bucket = String(line.bucket || "").replace(/^\/+|\/+$/g, "");
+      if (pic && bucket) {
+        var origin = pic;
+        var om = pic.match(/^https?:\/\/[^/]+/);
+        if (om) origin = om[0];
+        _imgCdn = { origin: origin, bucket: bucket };
+        return _imgCdn;
+      }
+    }
+  } catch (e) { /* 降级 */ }
+  _imgCdn = { origin: "https://pps.aiide.online", bucket: "encryption-ts" };
+  return _imgCdn;
+}
+
+async function signImages(thumbs) {
+  var result = {};
+  var uniq = [];
+  var seen = {};
+  (thumbs || []).forEach(function (x) {
+    var v = t(x);
+    if (v && !seen[v]) { seen[v] = true; uniq.push(v); }
+  });
+  if (!uniq.length) return result;
+  var cdn = await getImgCdn();
+  var pathMap = {}; // signPath -> thumb
+  var signPaths = [];
+  uniq.forEach(function (th) {
+    var clean = th;
+    if (/^https?:\/\//i.test(clean)) {
+      var pm = clean.match(/^https?:\/\/[^/]+(\/.*)$/);
+      if (pm) clean = pm[1];
+    }
+    clean = clean.replace(/^\/+/, "");
+    if (clean.indexOf(cdn.bucket + "/") === 0) clean = clean.slice(cdn.bucket.length + 1);
+    var sp = /\.js$/.test(clean) ? cdn.bucket + "/" + clean : cdn.bucket + "/" + clean + ".js";
+    pathMap[sp] = th;
+    signPaths.push(sp);
+  });
+  var token = "";
+  try { token = await ensureAccessToken(); } catch (e) { return result; }
+  for (var i = 0; i < API_HOSTS.length; i++) {
+    try {
+      var text = await httpPostJson(API_HOSTS[i] + "/api/v2/home/user/cdn/sign",
+        { paths: signPaths },
+        apiHeaders({ "Content-Type": "application/json", "Authorization": "Bearer " + token }));
+      if (!text) continue;
+      var resp = JSON.parse(text);
+      if (resp.code !== 200) {
+        if (resp.code === 401) { _accessToken = ""; token = await ensureAccessToken().catch(function () { return ""; }); }
+        continue;
+      }
+      if (resp.data == null) continue;
+      var data = resp.data;
+      if (typeof data === "string" && data) {
+        try { data = xorDecrypt(data, resp.key || ""); } catch (e) { continue; }
+      }
+      if (data && data.list && data.list.length) {
+        data.list.forEach(function (item) {
+          var th = pathMap[item.path];
+          if (th && item.url) {
+            result[th] = cdn.origin + "/" + String(item.url).replace(/^\/+/, "");
+          }
+        });
+        return result;
+      }
+    } catch (e) { continue; }
+  }
+  return result;
+}
+
+// ---------- 列表 / 搜索 / 详情 ----------
+function linkOf(id) {
+  return BASE + "/video/" + id;
+}
+
+function toCards(list, signed) {
+  var out = [];
+  (list || []).forEach(function (v) {
+    var id = String(v.id);
+    var thumb = t(v.thumb);
+    var pic = thumb ? (signed[thumb] || "") : "";
+    out.push({
+      id: linkOf(id),
+      type: "url",
+      title: v.title || "",
+      posterPath: pic,
+      coverUrl: pic,
+      backdropPath: pic,
+      link: linkOf(id),
+      description: v.classifyTitles || v.labelTitles || "",
+      mediaType: "movie"
+    });
+  });
+  return out;
+}
+
+async function cardsFromApi(data) {
+  var raw = data && data.list ? data.list : [];
+  if (!raw.length) return [];
+  var thumbs = raw.map(function (v) { return v.thumb; });
+  var signed = await signImages(thumbs);
+  return toCards(raw, signed);
+}
+
+async function loadList(params) {
+  params = params || {};
+  // 全覆盖派发：App 点 peoples/genreItems 可能调 loadList(peopleId/genreId)。
+  var _pid = t(params.peopleId || params.personId || "");
+  var _gid = t(params.genreId || params.genre || "");
+  if (_pid || _gid) {
+    var _tok = _pid || _gid;
+    if (_tok.indexOf("label:") === 0) return await loadList({ path: _tok.slice(6), page: params.page || 1 });
+    if (_tok.indexOf("tag:") === 0) return await search({ keyword: _tok.slice(4), page: params.page || 1 });
+    if (_tok.indexOf("actor:") === 0) return await search({ keyword: _tok.slice(6), page: params.page || 1 });
+    return await search({ keyword: _tok, page: params.page || 1 });
+  }
+  var rawTid = String(params.path || params.cat || "268");
+  var page = parseInt(params.page, 10) || 1;
+  var vt = String(params.videoType || "long");
+  var tid = rawTid;
+  if (rawTid.indexOf("short:") === 0) { vt = "short"; tid = rawTid.slice(6); }
+  else if (rawTid.indexOf("long:") === 0) { vt = "long"; tid = rawTid.slice(5); }
+  // 热门(268) 用 type=hot 接口（与蜘蛛一致；cate+typeId=268 只能拿到 20 条）；
+  // 短视频无 hot 榜（实测 0 条），一律走 cate。
+  var apiParams;
+  if (tid === "268" && vt !== "short") {
+    apiParams = { page: String(page), limit: "20", type: "hot", videoType: "long" };
+  } else {
+    apiParams = { page: String(page), limit: "20", type: "cate", typeId: tid, videoType: vt };
+  }
+  try {
+    var data = await apiCall("/api/v2/home/public/video/list", apiParams);
+    if (!data) {
+      return [{ id: "err", type: "url", title: "载入失败: API 无回应", description: "分类 " + tid }];
+    }
+    var total = data.total || 0;
+    if (total > 0 && (page - 1) * 20 >= total) return [];
+    var cards = await cardsFromApi(data);
+    return cards.length ? cards : [{ id: "empty", type: "url", title: "没有找到相关影片" }];
+  } catch (e) {
+    var msg = String((e && e.message) || e);
+    return [{ id: "err", type: "url", title: "载入失败: " + msg.slice(0, 50), description: msg }];
+  }
+}
+
+function pickKeyword(params) {
+  if (params == null) return "";
+  if (typeof params === "string" || typeof params === "number") return String(params).trim();
+  var keys = ["keyword", "q", "search", "text", "query", "wd", "key"];
+  for (var i = 0; i < keys.length; i++) {
+    if (params[keys[i]]) return String(params[keys[i]]).trim();
+  }
+  return "";
+}
+
+async function search(params) {
+  params = params || {};
+  var wd = pickKeyword(params);
+  var page = parseInt(params.page, 10) || 1;
+  if (!wd) {
+    return [{ id: "tip", type: "url", title: "输入关键词搜索" }];
+  }
+  try {
+    var data = await apiCall("/api/v2/home/public/video/search", {
+      page: String(page), limit: "20", keyword: wd, videoType: "long"
+    });
+    var raw = data && (data.list || data.data) ? (data.list || data.data) : [];
+    if (!raw.length) {
+      return [{ id: "empty", type: "url", title: "没有找到相关影片" }];
+    }
+    var thumbs = raw.map(function (v) { return v.thumb; });
+    var signed = await signImages(thumbs);
+    return toCards(raw, signed);
+  } catch (e) {
+    var msg = String((e && e.message) || e);
+    return [{ id: "err", type: "url", title: "搜索失败: " + msg.slice(0, 50), description: msg }];
+  }
+}
+
+var _cdnList = null;
+async function getCdnList() {
+  if (_cdnList) return _cdnList;
+  try {
+    var data = await apiCall("/api/v2/home/public/aed/site/channel", { channel: "tz" });
+    if (data && data.videoUrlCdns && data.videoUrlCdns.length > 0) {
+      _cdnList = data.videoUrlCdns;
+      return _cdnList;
+    }
+  } catch (e) { /* 降级 */ }
+  _cdnList = FALLBACK_CDNS.slice();
+  return _cdnList;
+}
+
+// play/url 相对地址按 cdnId 拼 CDN（与 loadDetail 旧口径一致）；绝对地址原样回。
+function absPlayUrl(relUrl, cdns) {
+  var rel = String(relUrl || "");
+  if (!rel) return "";
+  if (/^https?:\/\//i.test(rel)) return rel;
+  var cdnIdx = 0;
+  var cm = rel.match(/cdnId=(\d+)/);
+  if (cm) {
+    var cid = parseInt(cm[1], 10);
+    if (cid >= 0 && cid < cdns.length) cdnIdx = cid;
+  }
+  return cdns[cdnIdx].replace(/\/$/, "") + rel;
+}
+
+// 相对地址按 base 的 origin+目录拼接（主列表里的变体地址是相对路径）
+function resolveRelUrl(base, rel) {
+  var r = String(rel || "").trim();
+  if (!r) return "";
+  if (/^https?:\/\//i.test(r)) return r;
+  var m = String(base).match(/^(https?:\/\/[^/]+)(\/.*\/)?[^/]*$/);
+  if (!m) return r;
+  if (r.charAt(0) === "/") return m[1] + r;
+  return m[1] + (m[2] || "/") + r;
+}
+
+// 主列表取全部变体：按 RESOLUTION 高度降序、同高按 BANDWIDTH 降序；
+// 无 RESOLUTION 时按 BANDWIDTH 命名（kbps），无两者时名“自适应”；同地址去重。
+// 拉取/解析失败一律返回 []，调用方回落三字段成档。
+async function pickAllVariants(masterUrl) {
+  try {
+    if (!masterUrl || !/\.m3u8|_play/i.test(masterUrl)) return [];
+    var txt = await httpGetText(masterUrl, { "User-Agent": UA, "Referer": BASE + "/" });
+    if (!txt || txt.indexOf("#EXT-X-STREAM-INF") === -1) return [];
+    var lines = String(txt).split(/\r?\n/);
+    var variants = [];
+    var seen = {};
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].indexOf("#EXT-X-STREAM-INF") !== 0) continue;
+      var bwM = lines[i].match(/BANDWIDTH=(\d+)/);
+      var resM = lines[i].match(/RESOLUTION=(\d+)x(\d+)/);
+      var uri = "";
+      for (var j = i + 1; j < lines.length; j++) {
+        var ln = String(lines[j]).trim();
+        if (!ln) continue;
+        if (ln.charAt(0) !== "#") uri = ln;
+        break;
+      }
+      if (!uri) continue;
+      var url = resolveRelUrl(masterUrl, uri);
+      if (!url || seen[url]) continue;
+      seen[url] = 1;
+      var h = resM ? parseInt(resM[2], 10) : 0;
+      var bw = bwM ? parseInt(bwM[1], 10) : 0;
+      variants.push({
+        h: h,
+        bw: bw,
+        url: url,
+        name: h > 0 ? (h + "p") : (bw > 0 ? (Math.round(bw / 1000) + "kbps") : "自适应")
+      });
+    }
+    variants.sort(function (a, b) { return (b.h - a.h) || (b.bw - a.bw); });
+    return variants;
+  } catch (e) {
+    return [];
+  }
+}
+
+// 主列表选档（旧口径保留作兼容）：优先取 ≤1080 的最高档，失败回退主列表原地址。
+async function pickBestVariant(masterUrl) {
+  var all = await pickAllVariants(masterUrl);
+  if (!all.length) return masterUrl;
+  var le = all.filter(function (v) { return v.h > 0 && v.h <= 1080; });
+  if (le.length) return le[0].url;
+  return all[0].url;
+}
+
+// ---- AVDB 样式详情：演员/分类（点按出对应全部内容，API 字段）----
+function taxRealWorks(works) {
+  var out = [];
+  for (var i = 0; i < works.length; i++) {
+    var w = works[i];
+    if (w && w.id !== "err" && w.id !== "err_cf" && w.id !== "empty" && w.id !== "tip") out.push(w);
+  }
+  return out;
+}
+
+function taxNamesFromVal(v) {
+  var out = [];
+  if (typeof v === "string") {
+    var parts = v.split(/[,、;；|]/);
+    for (var i = 0; i < parts.length; i++) { var s = String(parts[i] || "").trim(); if (s && s.length <= 40) out.push(s); }
+  } else if (Array.isArray(v)) {
+    for (var j = 0; j < v.length; j++) {
+      var it = v[j];
+      if (typeof it === "string") { var s2 = String(it || "").trim(); if (s2 && s2.length <= 40) out.push(s2); }
+      else if (it && typeof it === "object") { var nm = String(it.name || it.title || it.label || "").trim(); if (nm && nm.length <= 40) out.push(nm); }
+    }
+  }
+  return out;
+}
+
+function extractTaxonomyFromApi(d) {
+  var peoples = [];
+  var genreItems = [];
+  var seenP = {};
+  var seenG = {};
+  var actorKeys = ["actress", "actresses", "actor", "actors", "stars", "star", "performer", "performers", "model", "models"];
+  var genreKeys = ["genre", "genres", "tag", "tags", "category", "categories", "label", "labels"];
+  var ki, k, names, ni, nm;
+  for (ki = 0; ki < actorKeys.length; ki++) {
+    k = actorKeys[ki];
+    if (!d || d[k] == null) continue;
+    names = taxNamesFromVal(d[k]);
+    for (ni = 0; ni < names.length; ni++) {
+      nm = names[ni];
+      if (seenP[nm]) continue;
+      seenP[nm] = 1;
+      if (peoples.length < 20) peoples.push({ id: "actor:" + nm, title: nm, name: nm, link: "actor:" + nm, role: "演员" });
+    }
+    if (peoples.length >= 20) break;
+  }
+  // 分类分两类：labelTitles（单分类）+ label 数字 id 走分类接口，id 为 label:<数字 id>；
+  // classifyTitles（多标签）无按 id 查列表的接口，走关键词搜索，id 为 tag:<名>。
+  var labelId = t(d && d.label ? d.label : "");
+  var labelNames = taxNamesFromVal(d ? d.labelTitles : null);
+  for (ni = 0; ni < labelNames.length; ni++) {
+    nm = labelNames[ni];
+    var lid = labelId ? ("label:" + labelId) : ("tag:" + nm);
+    if (seenG[lid + "|" + nm]) continue;
+    seenG[lid + "|" + nm] = 1;
+    if (genreItems.length < 20) genreItems.push({ id: lid, title: nm, link: lid });
+  }
+  var clsNames = taxNamesFromVal(d ? d.classifyTitles : null);
+  for (ni = 0; ni < clsNames.length; ni++) {
+    nm = clsNames[ni];
+    if (seenG["tag:" + nm]) continue;
+    seenG["tag:" + nm] = 1;
+    if (genreItems.length < 20) genreItems.push({ id: "tag:" + nm, title: nm, link: "tag:" + nm });
+  }
+  for (ki = 0; ki < genreKeys.length; ki++) {
+    k = genreKeys[ki];
+    if (k === "label") continue; // label 是数字分类 id，不是名字（已由 labelTitles 分支处理）
+    if (!d || d[k] == null) continue;
+    names = taxNamesFromVal(d[k]);
+    for (ni = 0; ni < names.length; ni++) {
+      nm = names[ni];
+      if (seenG["tag:" + nm]) continue;
+      seenG["tag:" + nm] = 1;
+      if (genreItems.length < 20) genreItems.push({ id: "tag:" + nm, title: nm, link: "tag:" + nm });
+    }
+    if (genreItems.length >= 20) break;
+  }
+  return { peoples: peoples, genreItems: genreItems };
+}
+
+async function taxTokenRoute(token, dispTitle) {
+  var isActor = token.indexOf("actor:") === 0;
+  var isLabel = token.indexOf("label:") === 0;
+  var name = "";
+  if (isActor) name = token.slice(6);
+  else if (isLabel) name = t(dispTitle || "");
+  else if (token.indexOf("category|") === 0) name = token.slice(9);
+  else if (token.indexOf("genre:") === 0) name = token.slice(6);
+  else if (token.indexOf("tag:") === 0) name = token.slice(4);
+  var works = [];
+  try {
+    // label:<id> 走精确的分类接口；tag:<名> 走关键词搜索（站方搜索按标签匹配，实测干净）
+    if (isLabel) works = await loadList({ path: token.slice(6), page: 1 });
+    else works = await search({ keyword: name });
+  } catch (_) { works = []; }
+  if (!Array.isArray(works)) works = [];
+  var realWorks = taxRealWorks(works);
+  return {
+    id: token,
+    type: "detail",
+    mediaType: "movie",
+    title: name || (isActor ? "演员" : "分类"),
+    link: token,
+    description: (isActor ? "演员" : "分类") + " · 共 " + realWorks.length + " 部作品",
+    videoUrl: "",
+    childItems: [],
+    relatedItems: realWorks.length ? realWorks : works
+  };
+}
+
+async function loadDetail(link) {
+  var rawLink = link;
+  // label:<id> 的 token 本身不带分类名：点按对象里的 title（如"黑料"）要留下来当点按详情的标题
+  var dispTitle = "";
+  if (rawLink && typeof rawLink === "object") {
+    dispTitle = t(rawLink.title || rawLink.name || "");
+    rawLink = rawLink.link || rawLink.id || rawLink.url || rawLink.videoUrl || "";
+  }
+  var s = String(rawLink || "");
+  if (s.indexOf("tag:") === 0 || s.indexOf("actor:") === 0 || s.indexOf("label:") === 0) {
+    return await taxTokenRoute(s, dispTitle);
+  }
+  // 裸名（非 URL、非纯数字 id）：当标签名走 tag 搜索详情
+  if (s && s.indexOf("://") < 0 && s.indexOf("/") < 0 && !/^\d+$/.test(s)) {
+    return await taxTokenRoute("tag:" + s);
+  }
+  try {
+    var im = s.match(/\/video\/(\d+)/) || s.match(/^(\d+)$/);
+    if (!im) {
+      return { id: s || "err", type: "url", title: "解析失败", description: "链接里没有视频 id" };
+    }
+    var vodId = im[1];
+    var url = linkOf(vodId);
+
+    var data = await apiCall("/api/v2/home/public/video/long/detail", { id: vodId });
+    var tax = extractTaxonomyFromApi(data || {});
+    var title = data && data.title ? data.title : "";
+    var cover = "";
+    var backdrops = [];
+    if (data && data.thumb) {
+      // 剧照：详情 content 里的 <img> 剧照与封面 thumb 一起走签名接口
+      var thumbs = [data.thumb];
+      if (data.content) {
+        var sre = /<img[^>]+src="([^"]+)"/gi;
+        var sm;
+        while ((sm = sre.exec(String(data.content))) !== null) {
+          var su = t(sm[1]);
+          if (su && thumbs.indexOf(su) < 0) thumbs.push(su);
+        }
+      }
+      var signed = await signImages(thumbs);
+      cover = signed[t(data.thumb)] || "";
+      for (var bi = 1; bi < thumbs.length; bi++) {
+        var bu = signed[t(thumbs[bi])] || "";
+        if (bu && backdrops.indexOf(bu) < 0) backdrops.push(bu);
+      }
+    }
+
+    // 播放地址：指纹登录 → play/url（与蜘蛛 play() 一致，masterUrl 优先）
+    // v1.0.1：三字段各拼 CDN；master 主列表能解析出变体时按变体出档
+    // （本站实测只有 720/480 两档，无 1080p），解析失败回落三字段成档。
+    var variants = [];
+    var seenV = {};
+    function addVariant(name, url) {
+      if (!url || seenV[url]) return;
+      seenV[url] = 1;
+      variants.push({ name: name, url: url });
+    }
+    try {
+      var playData = await apiCallAuth("/api/v2/home/user/video/play/url", { id: vodId });
+      if (playData) {
+        var cdns = await getCdnList();
+        var masterAbs = absPlayUrl(playData.masterUrl || "", cdns);
+        var p720Abs = absPlayUrl(playData.p720Url || "", cdns);
+        var p480Abs = absPlayUrl(playData.p480Url || "", cdns);
+        if (masterAbs) {
+          var mv = await pickAllVariants(masterAbs);
+          for (var mi = 0; mi < mv.length; mi++) addVariant(mv[mi].name, mv[mi].url);
+        }
+        // 主列表没解析出变体（或缺某档）时，三字段各成一档补齐
+        addVariant("自适应", masterAbs);
+        addVariant("720p", p720Abs);
+        addVariant("480p", p480Abs);
+      }
+    } catch (e) { /* 降级为失败卡 */ }
+
+    if (!variants.length) {
+      return { id: url, type: "url", title: title || "解析失败", description: "未找到播放地址" };
+    }
+    // 每档两行：中转（javsb-relay /uu，带 Referer 取清单）+ 直连兜底；
+    // 播放行一律 playerType "system"（v1.0.1 缺该字段，行默认走 app 播不了）。
+    // 顶层 videoUrl 仍为最高档（中转）。
+    var eps = [];
+    var sEps = [];
+    var items = [];
+    var epNo = 0;
+    for (var vi = 0; vi < variants.length; vi++) {
+      var vName = variants[vi].name;
+      var vDirect = variants[vi].url;
+      var vRelay = RELAY_UU + encodeURIComponent(vDirect);
+      var rows = [
+        { suffix: "（中转）", url: vRelay },
+        { suffix: "（直连）", url: vDirect }
+      ];
+      for (var ri = 0; ri < rows.length; ri++) {
+        epNo++;
+        var rName = vName + rows[ri].suffix;
+        eps.push({ name: rName, link: rows[ri].url });
+        sEps.push({ title: rName, videoUrl: rows[ri].url, episodeNumber: epNo });
+        items.push({ id: rows[ri].url, type: "url", title: (title || "Uu视频") + " " + rName, name: rName, mediaType: "movie", seasonNumber: 1, episodeNumber: epNo, videoUrl: rows[ri].url, link: rows[ri].url, posterPath: cover, coverUrl: cover, playerType: "system" });
+      }
+    }
+    var ret = {
+      id: url,
+      type: "detail",
+      title: title,
+      link: url,
+      posterPath: cover,
+      coverUrl: cover,
+      backdropPath: cover,
+      videoUrl: RELAY_UU + encodeURIComponent(variants[0].url),
+      playerType: "app",
+      episodes: eps,
+      seasons: [{ seasonNumber: 1, title: "正片", name: "正片", episodes: sEps }],
+      episodeItems: items,
+      childItems: items,
+      customHeaders: {
+        "User-Agent": UA,
+        "Referer": BASE + "/"
+      }
+    };
+    if (tax.peoples.length) ret.peoples = tax.peoples;
+    if (tax.genreItems.length) ret.genreItems = tax.genreItems;
+    if (backdrops.length) ret.backdropPaths = backdrops;
+    return ret;
+  } catch (e) {
+    return { id: s || "err", type: "url", title: "请求错误", description: String((e && e.message) || e) };
+  }
+}

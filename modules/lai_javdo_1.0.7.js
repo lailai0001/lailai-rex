@@ -1,0 +1,598 @@
+// v1.0.6：AVDB 样式详情：peoples/genreItems + 点按路由
+// v1.0.7：AVDB 详情实测修正：过滤 /stars/by-attribute/ 假演员（只留真演员）、genreItems 补 link、loadList 接 peopleId/genreId、loadDetail 接裸名
+// v1.0.5（2026-11-16）：用户明令不要再显示“按需解析”——真机上按需解析
+// v1.0.5（2026-11-21）：补顶层 search 键（A 键，照 64 个可见模块的众数形状）；B 条目与 search 函数一个字未动。
+//   基本不工作。改回 javlust 模式：详情页“正片”集直接带真 videoUrl（新鲜
+//   mostplayer 地址包进 javlust-r2 中转），App 直接播。
+// v1.0.2（2026-11-16）：修“有档位播不了、一直转圈”。根因：1.0.1 的集 videoUrl
+//   是详情时铸的 mostplayer 票据（180 秒，实测约 9 分钟仍活但终会过期），
+//   loadResource 的 unwrapLink 又 videoUrl 优先——App 传集对象时直接把旧票据
+//   原样交播放器，绝不重新现铸；详情页停留稍久或点播时票据已过期 → 转圈。
+//   （Worker /resolve 本身实测全活：真 slug 200 回新鲜直链，Range GET 206。
+//   mostplayer HEAD 回 403 是站方常态，Range GET 206 才是可播判据。）修法：
+//   集改为懒解析（不带 videoUrl 键，link 记详情页地址），点播必走 loadResource
+//   经 Worker 重新现铸；详情顶层去掉 videoUrl、type 改回 "detail"；
+//   loadResource 入参里若有详情地址，优先按它重铸，不直接播旧票据。
+// jav.do for REX (lai_javdo v1.0.1)
+// v1.0.1（2026-11-16）：修“解析出地址却播不了”。根因：MP4 票据只有 180 秒有效，
+//   1.0.0 在 loadDetail 时现铸现投进集 videoUrl，App 直接播该地址、绝不调
+//   loadResource；用户点开详情后过 180 秒再点播，票据已过期 → 一直加载。
+//   修法（照猫源 py_javdo 同款思路改成 REX 形态）：
+//   ① 解析主路改走已部署的 javdo-fetch Worker（GET /resolve?u=<详情URL>，
+//      Worker 单次调用内完成 详情页取 Cookie -> POST resolve 全链，返回新鲜直链；
+//      沙箱里只要 GET，不用 POST、不用 Cookie）；直连 POST 保留作回落。
+//   ② loadDetail 先解包对象入参（运行时传卡片对象时 String() 得 "[object Object]"
+//      会 404），再经 Worker 现铸现投；③ loadResource 点播时经 Worker 重新现铸
+//      （点播那刻的地址一定新鲜），失败再直连重解；④ 任何情况都不回空——
+//      现铸失败给站内嗅探回落（embed 页，无则详情页，playerType "app"）。
+// 2026-11-15 L2 组新写：Laravel 站，视频页 /videos/<slug>，播放走站方 resolve。
+// 列表：卡片 <a href="https://jav.do/videos/<slug>" title="CODE - 标题" aria-label=…>
+//   内 <img src="https://img.jav.do/videos/…-poster-….webp">；分页 ?page=N。
+// 详情：按钮 data-resolve-url="…/videos/<slug>/servers/{id}/resolve"、
+//   data-embed-url="https://www.dooplayer.com/embed/e/…"；
+//   POST resolve（body '{}'，头 Accept/Content-Type/X-CSRF-TOKEN/
+//   X-Requested-With + 同会话 Cookie）回 {"ok":true,"type":"video",
+//   "url":"https://cdn.mostplayer.com/stream?t=…",
+//   "proxy_url":"…/servers/{id}/media","fallback_url":"…dooplayer…","expires_in":180}；
+//   直链 url 新鲜时 200 video/mp4；proxy_url 实测恒 502、
+//   dooplayer embed 实测 204 空，故只出单行「正片」MP4，不编造档位。
+//   resolve 必须同会话 XSRF-TOKEN Cookie + meta csrf-token，光带 token 不带
+//   Cookie 回 419；Cookie 双路——运行侧若回传响应头则显式取 Set-Cookie 发
+//   Cookie 头，若不回传则靠 App 共享 Cookie jar；票据 180 秒，loadDetail
+//   现取现投、每集带 videoUrl（playerType "system"），loadResource 只作回落重解。
+// 字幕：REX 侧由 lai_subtitleagg 聚合模块提供，本模块不内联字幕。
+WidgetMetadata = {
+  id: "lai_javdo",
+  title: "jav.do",
+  description: "jav.do：最新/Reducing Mosaic/多类型，详情现解站方 resolve、单档 MP4 直链",
+  author: "lai",
+  version: "1.0.7",
+  requiredVersion: "0.0.1",
+  site: "https://jav.do",
+  detailCacheDuration: 60,
+  modules: [
+    { title: "搜索", functionName: "search", cacheDuration: 60, params: [ { name: "keyword", title: "关键词", type: "input" }, { name: "page", title: "页码", type: "page" } ] },
+    { title: "最新", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/videos" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "Reducing Mosaic", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/search?q=reducing-mosaic" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "巨乳", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/genres/big-tits" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "中出", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/genres/creampie" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "人妻", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/genres/married-woman" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "熟女", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/genres/mature-woman" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "校园", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/genres/school-girls" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "独角戏", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/genres/solowork" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "素人", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/genres/amateur" }, { name: "page", title: "页码", type: "page", value: "1" } ] },
+    { title: "剧情", functionName: "loadList", cacheDuration: 180, params: [ { name: "path", title: "分类", type: "constant", value: "/genres/drama" }, { name: "page", title: "页码", type: "page", value: "1" } ] }
+  ],
+  search: {
+    title: "搜索",
+    functionName: "search",
+    params: [
+      { name: "keyword", title: "关键词", type: "input" },
+      { name: "page", title: "页码", type: "page" }
+    ]
+  }
+};
+
+var HOST = "https://jav.do";
+var UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+var WORKER = "https://javdo-fetch.li768435813.workers.dev";
+// 播放中转：mostplayer HEAD 回 403，REX system 播放器探针 HEAD 会卡住转圈
+// （与 javlust R2 同款问题）。改走已部署的 javlust-r2 通用中转（HEAD 回 200、
+// Range 透传），播放器只碰 workers.dev。
+var RELAY = "https://javlust-r2.li768435813.workers.dev/play?u=";
+
+function t(v) {
+  return String(v == null ? "" : v).trim();
+}
+
+function cleanText(s) {
+  return t(s)
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, function (m, n) { return String.fromCharCode(parseInt(n, 10)); })
+    .replace(/&#x([0-9a-fA-F]+);/g, function (m, h) { return String.fromCharCode(parseInt(h, 16)); })
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ");
+}
+
+function firstMatch(text, re, idx) {
+  var m = String(text || "").match(re);
+  return m ? t(m[idx || 1] || "") : "";
+}
+
+function absUrl(url) {
+  url = t(url);
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.charAt(0) === "/") return HOST + url;
+  return HOST + "/" + url;
+}
+
+function pageHeaders(referer) {
+  return {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": referer || HOST + "/"
+  };
+}
+
+async function getFull(url, referer) {
+  var res = await Widget.http.get(url, { headers: pageHeaders(referer) });
+  var body = res && res.data != null ? String(res.data) : "";
+  var headers = (res && res.headers) || {};
+  return { body: body, headers: headers, status: (res && res.status) || 0 };
+}
+
+async function getText(url, referer) {
+  var r = await getFull(url, referer);
+  if (!r.body) throw new Error("空回应");
+  return r.body;
+}
+
+function parseCards(html) {
+  var items = [];
+  var seen = {};
+  var re = /<a href="(https:\/\/jav\.do\/videos\/[^"]+)" title="([^"]*)" aria-label="[^"]*">([\s\S]{0,2000}?)<\/a>/gi;
+  var m;
+  while ((m = re.exec(html))) {
+    var href = m[1];
+    if (seen[href]) continue;
+    seen[href] = 1;
+    var title = cleanText(m[2]);
+    if (!title || title.length < 2) continue;
+    var pic = "";
+    var im = m[3].match(/<img[^>]*src\s*=\s*"([^"]+)"/i);
+    if (im && im[1] && !/placeholder/i.test(im[1])) pic = im[1];
+    items.push({
+      id: href,
+      type: "url",
+      title: title,
+      posterPath: pic,
+      coverUrl: pic,
+      backdropPath: pic,
+      link: href,
+      description: "",
+      mediaType: "movie"
+    });
+    if (items.length >= 60) break;
+  }
+  return items;
+}
+
+function listOrMsg(html, url) {
+  if (!html) return [{ id: "empty", type: "url", title: "空页面" }];
+  var list = parseCards(html);
+  return list.length ? list : [{ id: "empty", type: "url", title: "没有找到相关内容", description: "URL: " + url }];
+}
+
+function listUrl(cat, page) {
+  page = Math.max(1, parseInt(page, 10) || 1);
+  cat = t(cat) || "/videos";
+  var u = HOST + "/" + cat.replace(/^\/+/, "");
+  if (page > 1) u += (u.indexOf("?") >= 0 ? "&" : "?") + "page=" + page;
+  return u;
+}
+
+async function loadList(params) {
+  params = params || {};
+  var page = parseInt(params.page, 10) || 1;
+  var cat = String(params.path || params.cat || params.peopleId || params.genreId || "/videos");
+  if (/^https?:\/\//i.test(cat)) cat = cat.replace(/^https?:\/\/[^/]+\//, "");
+  var url = listUrl(cat, page);
+  try {
+    var html = await getText(url, HOST + "/");
+    return listOrMsg(html, url);
+  } catch (e) {
+    var msg = String((e && e.message) || e);
+    return [{ id: "err", type: "url", title: "载入失败: " + msg.slice(0, 50), description: msg + " | URL: " + url }];
+  }
+}
+
+function pickKeyword(params) {
+  if (params == null) return "";
+  if (typeof params === "string" || typeof params === "number") return String(params).trim();
+  var keys = ["keyword", "q", "search", "text", "query", "wd", "key"];
+  for (var i = 0; i < keys.length; i++) {
+    if (params[keys[i]]) return String(params[keys[i]]).trim();
+  }
+  return "";
+}
+
+async function search(params) {
+  params = params || {};
+  var wd = pickKeyword(params);
+  var page = parseInt(params.page, 10) || 1;
+  if (!wd) return [{ id: "tip", type: "url", title: "输入关键词后搜索" }];
+  var url = HOST + "/search?q=" + encodeURIComponent(wd) + (page > 1 ? "&page=" + page : "");
+  try {
+    var html = await getText(url, HOST + "/");
+    return listOrMsg(html, url);
+  } catch (e) {
+    var msg = String((e && e.message) || e);
+    return [{ id: "err", type: "url", title: "搜索失败: " + msg.slice(0, 50), description: msg + " | URL: " + url }];
+  }
+}
+
+// Set-Cookie -> Cookie 头（只取真实 cookie 名值，剔 expires/path/domain 等属性）
+function cookieFromHeaders(headers) {
+  try {
+    if (!headers) return "";
+    var raw = "";
+    if (typeof headers.getSetCookie === "function") {
+      var arr = headers.getSetCookie();
+      if (arr && arr.length) raw = arr.join(", ");
+    }
+    if (!raw) raw = headers["set-cookie"] || headers["Set-Cookie"] || "";
+    if (Array.isArray(raw)) raw = raw.join(", ");
+    if (typeof raw !== "string" || !raw) return "";
+    var attrs = { expires: 1, path: 1, domain: 1, "max-age": 1, samesite: 1, secure: 1, httponly: 1 };
+    var pairs = [];
+    var seen = {};
+    var re = /([A-Za-z0-9_-]+)=([^;,]+)/g;
+    var m;
+    while ((m = re.exec(raw))) {
+      var name = m[1];
+      if (attrs[name.toLowerCase()]) continue;
+      if (seen[name]) continue;
+      seen[name] = 1;
+      pairs.push(name + "=" + t(m[2]));
+    }
+    return pairs.join("; ");
+  } catch (e) {
+    return "";
+  }
+}
+
+// POST（带守卫）：运行时无 post 方法时返回空，调用方按失败降级
+async function httpPostRaw(url, bodyText, headers) {
+  try {
+    if (typeof Widget.http.post === "function") {
+      var res = await Widget.http.post(url, bodyText, { headers: headers });
+      if (res && res.data != null) return res.data;
+      if (typeof res === "string") return res;
+    }
+  } catch (e) { /* 降级 */ }
+  return null;
+}
+
+// Worker 中转解析（主修法，与猫源同款）：GET {WORKER}/resolve?u=<详情URL>，
+// Worker 在单次调用内完成 详情页取 Cookie -> POST resolve 全链，返回新鲜直链；
+// 沙箱里只要 GET，不用 POST、不用 Cookie。失败返回空，不抛错。
+async function resolveViaWorker(durl) {
+  var out = { url: "", embedUrl: "" };
+  try {
+    var res = await Widget.http.get(WORKER + "/resolve?u=" + encodeURIComponent(durl), { headers: { "User-Agent": UA } });
+    var raw = res && res.data != null ? res.data : "";
+    var j = null;
+    try { j = typeof raw === "string" ? JSON.parse(raw) : raw; } catch (e) { j = null; }
+    if (j && j.ok && j.url) out.url = String(j.url);
+    if (j && j.embedUrl) out.embedUrl = String(j.embedUrl);
+  } catch (e) { /* 降级 */ }
+  return out;
+}
+
+// 详情页 -> resolve POST 取直链（现取现投，票据 180 秒）；返回 { url, embedUrl }
+async function resolvePlay(durl, html, cookie) {
+  var out = { url: "", embedUrl: "" };
+  try {
+    var em = String(html || "").match(/data-embed-url="([^"]+)"/i);
+    if (em) out.embedUrl = em[1];
+    var tm = String(html || "").match(/name="csrf-token"\s+content="([^"]+)"/i);
+    var rm = String(html || "").match(/data-resolve-url="([^"]+)"/i);
+    if (!tm || !rm) return out;
+    var headers = {
+      "User-Agent": UA,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "X-CSRF-TOKEN": tm[1],
+      "X-Requested-With": "XMLHttpRequest",
+      "Referer": durl
+    };
+    if (cookie) headers["Cookie"] = cookie;
+    var raw = await httpPostRaw(rm[1], "{}", headers);
+    if (raw == null) return out;
+    var j = null;
+    try { j = typeof raw === "string" ? JSON.parse(raw) : raw; } catch (e) { j = null; }
+    if (j && j.ok && j.url) out.url = String(j.url);
+  } catch (e) { /* 降级 */ }
+  return out;
+}
+
+// unwrapLink：App 可能把卡片对象直接传给 loadDetail/loadResource，String(对象)
+// 得 "[object Object]"，递归从对象/字符串/数组里抠出链接字符串，优先 videoUrl
+// （集对象自带可播地址）。
+function unwrapLink(v) {
+  var depth = 0;
+  while (v != null && depth < 6) {
+    if (typeof v === "string") return t(v);
+    if (typeof v !== "object") return "";
+    if (Array.isArray(v)) { v = v.length ? v[0] : ""; depth++; continue; }
+    if (typeof v.videoUrl === "string" && v.videoUrl) return t(v.videoUrl);
+    if (typeof v.link === "string" && v.link) return t(v.link);
+    if (typeof v.url === "string" && v.url) return t(v.url);
+    if (typeof v.id === "string" && v.id) return t(v.id);
+    if (v.item) { v = v.item; depth++; continue; }
+    if (v.videoUrl) { v = v.videoUrl; depth++; continue; }
+    if (v.link) { v = v.link; depth++; continue; }
+    if (v.url) { v = v.url; depth++; continue; }
+    if (v.id) { v = v.id; depth++; continue; }
+    return "";
+  }
+  return "";
+}
+
+function buildDetail(url, title, pic, mp4Url, embedUrl) {
+  var eps = [];
+  var sEps = [];
+  var items = [];
+  if (mp4Url) {
+    // 对照 javlust：集直接带真 videoUrl，App 直接播，不再显示“按需解析”。
+    // 1.0.2 的懒解析在真机上基本不工作（用户明令）。地址是 loadDetail 时现铸的
+    // 新鲜 mostplayer 链接，包进 javlust-r2 中转（HEAD 回 200，解决 mostplayer
+    // HEAD 403 卡转圈）。票据若过期，刷新详情即可重取。
+    var playUrl = RELAY + encodeURIComponent(mp4Url);
+    eps.push({ name: "正片", link: url });
+    sEps.push({ title: "正片", videoUrl: playUrl, episodeNumber: 1 });
+    items.push({ id: url, type: "url", title: title + " 正片", name: "正片", mediaType: "movie", seasonNumber: 1, episodeNumber: 1, videoUrl: playUrl, link: url, posterPath: pic, coverUrl: pic, playerType: "system", customHeaders: { "User-Agent": UA, "Referer": url } });
+  }
+  if (embedUrl) {
+    var n = items.length + 1;
+    eps.push({ name: "网页播放", link: embedUrl });
+    sEps.push({ title: "网页播放", videoUrl: embedUrl, episodeNumber: n });
+    items.push({ id: embedUrl, type: "url", title: title + " 网页播放", name: "网页播放", mediaType: "movie", seasonNumber: 1, episodeNumber: n, videoUrl: embedUrl, link: embedUrl, posterPath: pic, coverUrl: pic, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": url } });
+  }
+  if (!items.length) return null;
+  return {
+    id: url,
+    type: "detail",
+    title: title,
+    link: url,
+    posterPath: pic,
+    coverUrl: pic,
+    backdropPath: pic,
+    episodes: eps,
+    seasons: [{ seasonNumber: 1, title: "正片", name: "正片", episodes: sEps }],
+    episodeItems: items,
+    childItems: items
+  };
+}
+
+// ---- AVDB 样式详情：演员/分类（点按出对应全部内容）----
+// 详情页 HTML 里扫演员/分类链接（站内同源），建成 peoples / genreItems；
+// 点按后 loadDetail 走分类页分支（loadList 取该分类的全部影片，取不到则 search 回落）。
+// ---- AVDB 样式详情：演员/分类（点按出对应全部内容）----
+// 实测修正（2026-11-25，真站页验证）：详情页有大量 /stars/by-attribute/ 属性
+// 筛选链接（Twenties/Slim/MILF……），旧正则把它们当成演员（23 个假演员）；已
+// 过滤 by-attribute，只保留 /stars/<人名> 真演员（如 Hitomi Enshiro）。演员页
+// 实测干净（Hitomi Enshiro 页 25 部含本片 CESD-175；Drama 分类页 25 部）。
+// 注意：FC2PPV 合集类详情页本身无个人演员字段，该类留空 peoples、不编造。
+var TAX_HOST_OVERRIDE = "";
+var TAX_BASE = HOST;
+var TAX_ACTRESS_RE = /\/(actress(es)?|actors?|pornstars?|stars?|models?|performers?|idols?)\//i;
+var TAX_GENRE_RE = /\/(genres?|tags?|categor(?:y|ies)|category|labels?|makers?|channels?)\//i;
+var TAX_NAV_NAME_RE = /^(genres?|tags?|categor(?:y|ies)|category|actress(es)?|actors?|pornstars?|stars?|models?|makers?|channels?|labels?|all|全部|分类|演员|标签|女优|题材|片商)$/i;
+function taxAbs(href) {
+  var s = String(href || "").split("#")[0];
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.indexOf("//") === 0) return "https:" + s;
+  var base = TAX_HOST_OVERRIDE || TAX_BASE;
+  base = String(base || "").replace(/\/+$/, "");
+  if (s.charAt(0) === "/") return base + s;
+  return base + "/" + s;
+}
+function taxSlugOf(abs, isActress) {
+  var path = String(abs || "").split("?")[0].split("#")[0];
+  var vm = path.match(/\/(vodtype|vodshow)\/(\d+)/i);
+  if (vm) return vm[2];
+  var parts = path.replace(/^https?:\/\/[^/]+\//, "").split("/");
+  var segs = [];
+  for (var i = 0; i < parts.length; i++) { if (parts[i]) segs.push(parts[i]); }
+  while (segs.length > 1 && (/^\d+\.html$/i.test(segs[segs.length - 1]) || segs[segs.length - 1] === "page")) segs.pop();
+  while (segs.length > 1 && /^\d+$/.test(segs[segs.length - 1])) {
+    var prevSeg = segs[segs.length - 2];
+    if (/^(genres?|tags?|categor(?:y|ies)|category|labels?|makers?|channels?|actress(es)?|actors?|pornstars?|stars?|models?|performers?|idols?)$/i.test(prevSeg)) break;
+    segs.pop();
+  }
+  for (var j = 0; j < segs.length; j++) {
+    if (/_(category|makersr)$/i.test(segs[j]) && segs[j + 2]) return segs[j + 2];
+  }
+  if (!segs.length) return "";
+  var last = segs[segs.length - 1];
+  if (/^(genres?|tags?|categor(?:y|ies)|category|labels?|makers?|channels?|actress(es)?|actors?|pornstars?|stars?|models?|performers?|idols?)$/i.test(last)) return "";
+  return last;
+}
+
+function taxIsBareName(s) {
+  s = String(s || "");
+  if (!s) return false;
+  if (s.indexOf("http") === 0 || s.indexOf("/") >= 0) return false;
+  if (s.indexOf("actor:") === 0 || s.indexOf("tag:") === 0 || s.indexOf("g:") === 0) return false;
+  if (/^\d+$/.test(s)) return false;
+  if (/^[A-Za-z0-9]+-\d+$/.test(s)) return false;
+  if (/\s/.test(s)) return true;
+  if (/[^\x00-\x7F]/.test(s)) return true;
+  if (/^[A-Za-z]{3,}$/.test(s)) return true;
+  return false;
+}
+function taxSlugifyName(name) {
+  var s = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return s;
+}
+function taxRealWorks(list) {
+  var out = [];
+  var arr = list || [];
+  for (var i = 0; i < arr.length; i++) {
+    var w = arr[i];
+    if (w && w.id !== "err" && w.id !== "err_cf" && w.id !== "empty") out.push(w);
+  }
+  return out;
+}
+
+function extractTaxonomyFromHtml(html, hostOverride) {
+  if (hostOverride) TAX_HOST_OVERRIDE = hostOverride;
+  var peoples = [];
+  var genreItems = [];
+  var seenP = {};
+  var seenG = {};
+  var baseHost = String(TAX_HOST_OVERRIDE || TAX_BASE || "").replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+  var re = /<a[^>]+href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  var m;
+  while ((m = re.exec(String(html || ""))) !== null) {
+    var href = m[1] || "";
+    var name = String(m[2] || "").replace(/<[^>]*>/g, "").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+    if (!name || name.length > 40 || TAX_NAV_NAME_RE.test(name)) continue;
+    var abs = taxAbs(href).split(" ").join("%20");
+    if (!/^https?:\/\//i.test(abs)) continue;
+    if (/\/stars\/by-attribute\//i.test(abs)) continue;
+    var host = abs.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+    if (baseHost && host !== baseHost) continue;
+    var isA = TAX_ACTRESS_RE.test(abs);
+    var isG = !isA && TAX_GENRE_RE.test(abs);
+    if (!isA && !isG) continue;
+    var seg = taxSlugOf(abs, isA);
+    if (!seg) continue;
+    if (isA) {
+      if (seenP[abs]) continue;
+      seenP[abs] = 1;
+      peoples.push({ id: abs, title: name, name: name, link: abs, role: "演员" });
+    } else {
+      if (seenG[abs]) continue;
+      seenG[abs] = 1;
+      genreItems.push({ id: abs, title: name, link: abs });
+    }
+    if (peoples.length >= 20 && genreItems.length >= 20) break;
+  }
+  return { peoples: peoples, genreItems: genreItems };
+}
+function taxNameFromUrl(url) {
+  var s = String(url || "");
+  if (s.indexOf("actor:") === 0) return s.slice(6);
+  if (s.indexOf("tag:") === 0) return s.slice(4);
+  if (s.indexOf("g:") === 0) return s.slice(2);
+  var seg = taxSlugOf(s, false);
+  var name = seg;
+  try { name = decodeURIComponent(seg); } catch (e) { name = seg; }
+  return String(name || "").replace(/\+/g, " ").trim();
+}
+function taxPathOf(u) {
+  var p = String(u || "").replace(/^https?:\/\/[^/]+\//, "");
+  if (p.charAt(0) === "/") p = p.slice(1);
+  return p;
+}
+async function taxPrimaryWorks(url, name, isActress) {
+  var p = taxPathOf(url).replace(/\/page\/\d+\/?$/i, "").replace(/\/+$/, "");
+  try { return await loadList({ path: p, page: 1 }); } catch (e) { return []; }
+}
+async function taxWorksForName(name) {
+  var slug = taxSlugifyName(name);
+  if (slug) {
+    try { var w = await loadList({ path: "stars/" + slug, page: 1 }); if (taxRealWorks(w).length) return { works: w, isActress: true }; } catch (e) {}
+    try { var g = await loadList({ path: "genres/" + slug, page: 1 }); if (taxRealWorks(g).length) return { works: g, isActress: false }; } catch (e2) {}
+  }
+  try { var sw = await search({ keyword: name }); return { works: sw || [], isActress: true }; } catch (e3) { return { works: [], isActress: true }; }
+}
+async function taxRouteDetail(url, isActress, niceTitle) {
+  var name = niceTitle || taxNameFromUrl(url);
+  if (taxIsBareName(url)) {
+    var br = null;
+    try { br = await taxWorksForName(String(url)); } catch (e) { br = null; }
+    var bw = (br && br.works) || [];
+    var breal = taxRealWorks(bw);
+    if (!breal.length) return null;
+    var bisA = !!(br && br.isActress);
+    return { id: url, type: "detail", mediaType: "movie", title: name || (bisA ? "演员" : "分类"), link: url, description: (bisA ? "演员" : "分类") + " · 共 " + breal.length + " 部作品", videoUrl: "", childItems: [], relatedItems: breal };
+  }
+  var works = [];
+  try { works = await taxPrimaryWorks(url, name, isActress) || []; } catch (e) { works = []; }
+  if (!Array.isArray(works)) works = [];
+  var real = taxRealWorks(works);
+  if (!real.length) {
+    try { var sw = await search({ keyword: name }); if (Array.isArray(sw)) works = sw; } catch (e2) {}
+    real = taxRealWorks(works);
+  }
+  return { id: url, type: "detail", mediaType: "movie", title: name || (isActress ? "演员" : "分类"), link: url, description: (isActress ? "演员" : "分类") + " · 共 " + real.length + " 部作品", videoUrl: "", childItems: [], relatedItems: real.length ? real : works };
+}
+
+
+async function loadDetail(link) {
+  try {
+    var url = unwrapLink(link);
+    var inTitle = (link && typeof link === "object") ? String(link.title || link.name || "") : "";
+    if (taxIsBareName(url)) { try { var bd = await taxRouteDetail(url, false, inTitle); if (bd) return bd; } catch (e) {} }
+    if (!/^https?:\/\//i.test(url)) url = absUrl(url);
+    if (!url) return { id: "err", type: "url", title: "解析失败", description: "链接为空" };
+    if (TAX_ACTRESS_RE.test(url) || TAX_GENRE_RE.test(url) || url.indexOf("actor:") === 0 || url.indexOf("tag:") === 0) { return await taxRouteDetail(url, TAX_ACTRESS_RE.test(url) || url.indexOf("actor:") === 0, inTitle); }
+    var r = await getFull(url, HOST + "/");
+    var html = r.body;
+    if (!html) return { id: url, type: "url", title: "解析失败", description: "详情页为空" };
+    var title = firstMatch(html, /<title>([^<]*)<\/title>/i) || "jav.do";
+    title = cleanText(title);
+    var pic = firstMatch(html, /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+    var rs = await resolveViaWorker(url);
+    if (!rs.url) {
+      var cookie = cookieFromHeaders(r.headers);
+      rs = await resolvePlay(url, html, cookie);
+    }
+    var tax = extractTaxonomyFromHtml(html);
+    var d = buildDetail(url, title, pic, rs.url, rs.embedUrl);
+    if (d) { if (tax.peoples.length) d.peoples = tax.peoples; if (tax.genreItems.length) d.genreItems = tax.genreItems; return d; }
+    return { id: url, type: "url", title: title, description: "未找到播放地址" };
+  } catch (e) {
+    return { id: String((link && link.link) || link || "err"), type: "url", title: "请求错误", description: String((e && e.message) || e) };
+  }
+}
+
+// 从入参对象里抠 jav.do 详情地址（旧版缓存详情的集只有 mostplayer 票据地址，
+// link/id 里若有详情地址，点播时优先按它重新现铸）。
+function detailUrlOf(params) {
+  if (!params || typeof params !== "object") return "";
+  var cands = [params.link, params.url, params.id];
+  if (params.item && typeof params.item === "object") cands.push(params.item.link, params.item.url, params.item.id);
+  for (var i = 0; i < cands.length; i++) {
+    var s = cands[i];
+    if (typeof s === "string" && /jav\.do\/videos\//i.test(s)) return s;
+  }
+  return "";
+}
+
+// 回落：直链原样透传；详情链接点播时经 Worker 重新现铸（票据 180 秒，点播那刻
+// 的地址一定新鲜），Worker 失败再直连重解；仍失败给站内嗅探回落；全程
+// try/catch、永不抛错、永不回空。
+async function loadResource(params) {
+  try {
+    var raw = unwrapLink(params);
+    if (!raw) return [];
+    if (/dooplayer\.com/i.test(raw)) {
+      return [{ name: "网页播放", url: raw, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": HOST + "/" } }];
+    }
+    // 旧版缓存详情的集自带 mostplayer 地址（详情时铸的票据已过期）：若入参里
+    // 另有 jav.do 详情地址，优先按详情地址重新现铸，绝不直接播旧票据。
+    var durl = detailUrlOf(params);
+    if (durl) raw = durl;
+    if (/mostplayer\.com\/stream/i.test(raw) || /\.(m3u8|mp4)/i.test(raw)) {
+      return [{ name: "正片", url: RELAY + encodeURIComponent(raw), playerType: "system", customHeaders: { "User-Agent": UA, "Referer": HOST + "/" } }];
+    }
+    if (/jav\.do\/videos\//i.test(raw)) {
+      var rs = await resolveViaWorker(raw);
+      if (!rs.url) {
+        var r = await getFull(raw, HOST + "/");
+        if (r.body) {
+          var cookie = cookieFromHeaders(r.headers);
+          rs = await resolvePlay(raw, r.body, cookie);
+        }
+      }
+      var rows = [];
+      if (rs.url) rows.push({ name: "正片", url: RELAY + encodeURIComponent(rs.url), playerType: "system", customHeaders: { "User-Agent": UA, "Referer": raw } });
+      if (rs.embedUrl) rows.push({ name: "网页播放", url: rs.embedUrl, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": raw } });
+      if (!rows.length) rows.push({ name: "网页播放", url: raw, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": HOST + "/" } });
+      return rows;
+    }
+    return [{ name: "播放", url: raw, playerType: "app", customHeaders: { "User-Agent": UA, "Referer": HOST + "/" } }];
+  } catch (e) {
+    return [];
+  }
+}
