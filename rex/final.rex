@@ -836,9 +836,9 @@
       "title": "Pornhub",
       "description": "",
       "requiredVersion": "0.0.1",
-      "version": "1.1.13",
+      "version": "1.1.14",
       "author": "",
-      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_pornhub_1.1.13.js"
+      "url": "https://raw.githubusercontent.com/lailai0001/lailai-rex/refs/heads/main/modules/lai_pornhub_1.1.14.js"
     },
     {
       "id": "lai_ppp",
